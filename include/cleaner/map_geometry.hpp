@@ -5,35 +5,80 @@
 #include <algorithm>
 #include <iostream>
 #include "opencv2/opencv.hpp"
+#include <optional>
 
-/*
-    This class is repsonsible to make some polygons out of the obstalces inside the occupancy grid map
-*/
+/**
+ * Extracts traversable free-space geometry from an OccupancyGrid.
+ *
+ * The input OccupancyGrid may come from:
+ *   - rasterized image
+ *   - ROS occupancy grid
+ *   - SLAM
+ *
+ * MapGeometry does not know or care about the source.
+ *
+ * Output:
+ *   - outer free-space boundaries
+ *   - obstacle holes inside free space
 
+
+ *   XXXXXXXXXXXXXXXXXXXX
+ *   X                  X
+ *   X      XXXX        X
+ *   X      XXXX        X
+ *   X                  X
+ *   XXXXXXXXXXXXXXXXXXXX
+ *   Contour 1
+ *       is_hole = false
+ *       outer boundary of free region
+ *
+ *   Contour 2
+ *       is_hole = true
+ *       boundary around XXXX
+ *       parent = Contour 1
+
+ */
+
+ // Raster Level Data
 struct Contour{
     int id_;
     std::vector<Point<int>> points_;
     int parent_id_;
+    /*
+        is_hole_ == false
+            boundary of a free-space component
+
+        is_hole_ == true
+            occupied/unknown hole inside that free-space component
+    */
     bool is_hole_;
 
 };
 
+// Geometry Level Data
 class Polygon {
-    public:
-        Polygon(){}
-        std::vector<Point<double>> points_;
+public:
+    std::vector<Point<double>> points_;
+};
+
+struct PolygonWithHoles {
+    Polygon outer_;
+    std::vector<Polygon> holes_;
 };
 
 class MapGeometry{
     public:
         MapGeometry(const OccupancyGrid& grid_map);
         void findContours();
-        void trace(Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel);
+        void trace(Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_successor);
         void showContours(const cv::Mat& original_image);
+        void listContours();
     private:
         std::vector<Contour> contours_;
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
         std::vector<std::vector<int>> working_grid_; // copy of the grid map to use for suzuki-abe 
+        std::vector<PolygonWithHoles> free_space_regions_;
+
 
         std::array<Point<int>, 8> clockwise_ {{
             { 1,  0},  // 0: E
