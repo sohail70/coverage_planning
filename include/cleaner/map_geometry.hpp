@@ -13,7 +13,7 @@
 struct Contour{
     int id_;
     std::vector<Point<int>> points_;
-    Contour* parent_;
+    int parent_id_;
     bool is_hole_;
 
 };
