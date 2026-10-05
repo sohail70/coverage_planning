@@ -1,6 +1,8 @@
 #pragma once
 #include <cmath>
+#include <fstream>
 #include <math.h>
+#include <ostream>
 
 /*
     Point<int> for image --> basically x_ is horizontal so its column and y_ is vertical so it means rows in a image!
@@ -30,8 +32,29 @@ struct Point{
         return (A.x_==x_&& A.y_==y_);
     }
 
-};
+    friend std::ostream& operator<<(std::ostream& out , const Point<T>& p){
+        out<<"x: "<<p.x_<<", "<<"y: "<<p.y_<<"\n";
+        return out;
+    }
 
+};
+template <typename T>
+struct Segment{
+    Segment(){}
+    Segment(Point<T> start, Point<T> end):start_(start),end_(end){}
+    Point<T> start_;
+    Point<T> end_;
+
+    void reverse(){
+        std::swap(start_, end_);
+    }
+
+
+    friend std::ostream& operator<<(std::ostream& out , const Segment<T> seg_){
+        out<<"start_: "<<seg_.start_ <<"end_: "<<seg_.end_<<"\n";
+        return out;
+    }
+};
 
 
 /*

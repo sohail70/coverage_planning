@@ -1,5 +1,6 @@
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/occupancy_grid.hpp"
+#include <array>
 #include <opencv2/core/matx.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/opencv.hpp>
@@ -475,6 +476,11 @@ void MapGeometry::trace( Contour& c, int row, int col, int prev_row, int prev_co
     if(!first_neighbor_found_){
         working_grid_[row][col] = -c.id_;
         c.points_.push_back(current_pixel_);
+        c.boundary_sides_.push_back(
+            {true, true, true, true}
+        );
+
+
         return;
     }
 
@@ -498,6 +504,19 @@ void MapGeometry::trace( Contour& c, int row, int col, int prev_row, int prev_co
             right_hand_background_pixel_ = Point{current_.x_+1,current_.y_}; // this is a cell with 0 value which is on the right of the current pixel
             zero_right_hand_exist = true;
         }
+
+
+
+        // USEFULL FOR POLYGONIZATION
+        /*
+            Meaning:
+            if top_boundary is true : the TOP edge of C belongs to this contour
+            if right_boundary is true: the RIGHT edge of C belongs to this contour
+        */
+        bool left_boundary   = false;
+        bool top_boundary    = false;
+        bool right_boundary  = false;
+        bool bottom_boundary = false;
         /*
             How to do CCW movement on a CW array?
             so imagine start index is 4 then 
@@ -524,7 +543,34 @@ void MapGeometry::trace( Contour& c, int row, int col, int prev_row, int prev_co
             if(zero_right_hand_exist &&  current_neighbor_ == right_hand_background_pixel_)
                 make_minus_ = true;
 
-            if(working_grid_[current_neighbor_.y_][current_neighbor_.x_] != 0){ // foreground test must be != 0, not >= 1. Negative -NBD pixels are still foreground.
+            auto state = working_grid_[current_neighbor_.y_][current_neighbor_.x_];
+
+            ////// some rich information needed for polygonization and unnecessery for findContour///////
+            // If THIS neighbor was actually examined as background,
+            // remember cardinal sides for this particular border traversal.
+            if (state==0){
+                // where is this neighbor wrt to current_
+                if(step.x_ == 1 && step.y_ == 0) {
+                    // EAST
+                    right_boundary = true;
+                }
+                else if(step.x_ == -1 && step.y_ == 0) {
+                    // WEST
+                    left_boundary = true;
+                }
+                else if(step.x_ == 0 && step.y_ == 1) {
+                    // SOUTH
+                    bottom_boundary = true;
+
+                }
+                else if(step.x_ == 0 && step.y_ == -1) {
+                    // NORTH
+                    top_boundary = true;
+                }
+            }
+            //////////////////////////////////////////////////////////////////////////////////////////////
+
+            if(state != 0){ // foreground test must be != 0, not >= 1. Negative -NBD pixels are still foreground.
                 next = Point<int>{current_neighbor_.x_ , current_neighbor_.y_};
                 // seems like we found the next cell
                 // we put the current cell for now!
@@ -549,11 +595,26 @@ void MapGeometry::trace( Contour& c, int row, int col, int prev_row, int prev_co
                     working_grid_[current_.y_][current_.x_] = c.id_;
 
 
+                //rich info storing : unnecessary for findContour
+                /*
+                * boundary_sides_[i] corresponds to points_[i].
+                *
+                * A true side means that during THIS contour traversal,
+                * that cardinal background neighbor was examined before
+                * the next foreground border pixel was found.
+                *
+                * Therefore that side of the current cell belongs to
+                * this particular contour boundary.
+                */
+                c.boundary_sides_.push_back({left_boundary,top_boundary,right_boundary,bottom_boundary}) ;
+
+
                 // stopping condition
                 if(current_ == first_neighbor_ && next == current_pixel_) return;
 
                 reference_ = current_;
                 current_ = current_neighbor_;
+
                 break;
             }
         }
@@ -824,4 +885,253 @@ void MapGeometry::listContours(){
         // }
         std::cout<<"==================\n";
     }
+}
+
+
+
+/**
+ * Polygonization:
+ *
+ * findContours()/trace() already determined, for every contour cell,
+ * which sides of that cell belong to THIS particular contour.
+ *
+ * Therefore:
+ *
+ * for each real Contour
+ *      ↓
+ * for each points_[i]
+ *      ↓
+ * read boundary_sides_[i]
+ *      ↓
+ * for every side marked true:
+ *      generate the corresponding grid-edge Segment
+ *      ↓
+ * later: connect/order the segments into a closed polygon
+ *
+ *
+ * Grid geometry convention:
+ *
+ * cell [row][col] occupies:
+ *
+ * (col,row) -------- (col+1,row)
+ *     |                    |
+ *     |        CELL        |
+ *     |                    |
+ * (col,row+1) ---- (col+1,row+1)
+ *
+ *
+ * Directed edges are stored clockwise around the free cell:
+ *
+ * top:
+ *      (col,row) -> (col+1,row)
+ *
+ * right:
+ *      (col+1,row) -> (col+1,row+1)
+ *
+ * bottom:
+ *      (col+1,row+1) -> (col,row+1)
+ *
+ * left:
+ *      (col,row+1) -> (col,row)
+ *
+ * NOTE:
+ * These are GRID-VERTEX coordinates, not world coordinates yet.
+ */
+
+void MapGeometry::polygonize()
+{
+    if(contours_.empty()){
+        std::cout << "No Contours!\n";
+        return;
+    }
+
+    std::vector<std::vector<Segment<int>>> polygons_raw_;
+    polygons_raw_.resize(contours_.size());
+
+    for(const auto& c : contours_)
+    {
+        // points_[i] and boundary_sides_[i] must correspond.
+        if(c.points_.size() != c.boundary_sides_.size()){
+            std::cout << "Invalid contour data!\n";
+            continue;
+        }
+        auto grid_polygon_ = traceCrackBoundary(c);
+    }
+
+}
+/*
+    What traceCrackBoundary() does
+    It is another tracer, like Suzuki, except its state is:
+    current grid vertex
+    current direction
+
+    rather than:
+    current foreground cell
+    reference foreground cell
+
+
+    ALGORITHM:
+        1. Get Suzuki start cell.
+
+        2. Determine starting crack: (convention : while walking on the crack (Your POV should be on the crack), free space stays on the right side.)
+            outer -> left edge, moving UP
+            hole  -> right edge, moving DOWN
+
+        3. Now forget the Suzuki points temporarily.
+
+        4. At the end vertex of the current crack:
+            examine the four possible grid-edge directions
+            N, E, S, W.
+
+        5. A candidate edge is valid when:
+            cell on LEFT  = background (0)
+            cell on RIGHT = foreground (!=0)
+
+        6. Choose the valid next edge.
+
+        7. Add its next grid vertex to the polygon.
+
+        8. Repeat until the starting directed edge is reached again.
+
+*/
+
+std::vector<Point<int>> MapGeometry::traceCrackBoundary(const Contour& c){
+    std::vector<Segment<int>> segs_;
+
+    /*
+        convention is that the topleft vertex of the cell is P = (col , row)
+        so:
+
+        OUTER contour: background is LEFT of p
+
+        0 | FREE
+        ↑
+
+        start vertex = (col, row+1)
+        end vertex   = (col, row)
+        direction    = NORTH
+
+        and:
+        For a hole:
+        FREE | 0
+            ↓
+
+        start vertex = (col+1, row)
+        end vertex   = (col+1, row+1)
+        direction    = SOUTH
+    
+    */
+    // IMPORTANT: we are working with grid points now (which is the 4 points around the rectangular cell! for convention assume the cell index is the top-left and treat it as grid point)
+    Point<int> front_point_ = c.points_.front(); // we use this and the is_hole to decide whats the start_ and end_ of the first segement is!
+    Point<int> dir;
+    Point<int> start_;
+    Point<int> end_;
+    if (!c.is_hole_) { //outer border
+        start_ = Point<int>{front_point_.x_ , front_point_.y_ + 1};
+        end_ = Point<int>{front_point_.x_ , front_point_.y_};
+        dir = Point<int>{0,-1}; //North
+
+    }
+    else{
+        start_ = Point<int>{front_point_.x_ + 1 , front_point_.y_};
+        end_ = Point<int>{front_point_.x_ + 1 , front_point_.y_ + 1};
+        dir = Point<int>{0,1}; //South
+    }
+    segs_.push_back({start_,end_});
+    // Till now the state is : current vertex and current direction! --> so the current vertex is end_ and current direction thus far is either north or south!
+    /*
+        At each vertex, try directions relative to the direction you arrived from:
+        1. turn RIGHT
+        2. go STRAIGHT
+        3. turn LEFT
+        4. go BACK
+        Why this order? Because my convention is:
+        background stays on the LEFT, free space stays on the RIGHT.
+        
+        mind taht imagine you are walking on the directed edge so your POV should be in the edge for choosing direction
+
+
+        For each candidate direction, ask only:
+        Does this grid edge have:
+
+            LEFT cell  == 0
+            RIGHT cell != 0
+        ?
+
+    */
+
+    // now ask can you go N?E?S?W?
+
+    Point<int> current_vertex_ = end_;
+    /*
+        current vertex is shared by four cells:
+                        x-1        x
+
+                    +-----------+-----------+
+                    |           |           |
+            y-1     |    NW     |    NE     |
+                    |           |           |
+                    +-----------X-----------+  <- current vertex (x,y)
+                    |           |           |
+            y       |    SW     |    SE     |
+                    |           |           |
+                    +-----------+-----------+
+    
+    */
+
+    // For each possible directed edge, you need to inspect the two cells on the two sides of that edge.
+    while(true){
+    /**
+    * Crack-edge convention:
+    *
+    * "left" and "right" are relative to the WALKING DIRECTION, not the image.
+    * A valid directed crack edge always satisfies:
+    *
+    *      LEFT side  = background / obstacle = 0
+    *      RIGHT side = foreground / free    != 0
+    *
+    * Around current vertex (x,y):
+    *
+    *          NW | NE
+    *             |
+    *             X
+    *             |
+    *          SW | SE
+    *
+    * Direction table:
+    *
+    *      EAST  (x,y) -> (x+1,y) : left = NE , right = SE
+    *          valid if NE == 0 && SE != 0
+    *
+    *      SOUTH (x,y) -> (x,y+1) : left = SE , right = SW
+    *          valid if SE == 0 && SW != 0
+    *
+    *      WEST  (x,y) -> (x-1,y) : left = SW , right = NW
+    *          valid if SW == 0 && NW != 0
+    *
+    *      NORTH (x,y) -> (x,y-1) : left = NW , right = NE
+    *          valid if NW == 0 && NE != 0
+    *
+    * If a direction is valid:
+    *
+    *      next_vertex = current_vertex + direction
+    *
+    * Summary:
+    *      E -> NE / SE
+    *      S -> SE / SW
+    *      W -> SW / NW
+    *      N -> NW / NE
+    *
+    * The rule is always the same: background on the left, free space on the right.
+    */
+        int NE = working_grid_[current_vertex_.y_ - 1][current_vertex_.x_]; // you go north from the current vertex to reach the top left corenr of the NE cell
+        int SE = working_grid_[current_vertex_.y_][current_vertex_.x_];
+        int SW = working_grid_[current_vertex_.y_][current_vertex_.x_ - 1];
+        int NW = working_grid_[current_vertex_.y_ - 1][current_vertex_.x_ - 1];
+
+        
+
+
+    }
+
 }

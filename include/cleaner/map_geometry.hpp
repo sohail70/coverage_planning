@@ -83,10 +83,30 @@
 
  */
 
+
+ /*
+    left_boundary   -> left EDGE of current_ belongs to this contour
+    top_boundary    -> top EDGE of current_ belongs to this contour
+    right_boundary  -> right EDGE of current_ belongs to this contour
+    bottom_boundary -> bottom EDGE of current_ belongs to this contour
+ */
+struct BoundarySides {
+    bool left_   = false;
+    bool top_    = false;
+    bool right_  = false;
+    bool bottom_ = false;
+};
+
+
  // Raster Level Data
 struct Contour{
     int id_;
     std::vector<Point<int>> points_;
+
+    // Same index as points_.
+    // Describes which cell edges belong to this contour occurrence.
+    std::vector<BoundarySides> boundary_sides_;
+
     int parent_id_;
     /*
         is_hole_ == false
@@ -118,6 +138,10 @@ class MapGeometry{
         void trace( Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_neighbor);
         void showContours(const cv::Mat& original_image);
         void listContours();
+
+        void polygonize();
+        std::vector<Point<int>> traceCrackBoundary(const Contour& c);
+
     private:
         std::vector<Contour> contours_;
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
