@@ -7,6 +7,50 @@
 #include "opencv2/opencv.hpp"
 #include <optional>
 
+/*
+ * Coordinate conventions used in MapGeometry
+ * ------------------------------------------
+ *
+ * working_grid_ is indexed like an image:
+ *
+ *      working_grid_[row][col]
+ *      working_grid_[y][x]
+ *
+ * So:
+ *      row = y
+ *      col = x
+ *
+ * Point<int> stores Cartesian-style coordinates:
+ *
+ *      Point<int>{x, y}
+ *      Point<int>{col, row}
+ *
+ * Therefore:
+ *
+ *      grid access:
+ *          working_grid_[p.y_][p.x_]
+ *
+ *      create Point from row/col:
+ *          Point<int>{col, row}
+ *
+ *      create row/col from Point:
+ *          row = p.y_
+ *          col = p.x_
+ *
+ * Neighbor movement:
+ *
+ *      Point<int> step{dx, dy}
+ *
+ *      next.x_ = current.x_ + step.x_
+ *      next.y_ = current.y_ + step.y_
+ *
+ * IMPORTANT:
+ *      Never use Point{row, col}.
+ *      Point is always {x, y} = {col, row}.
+ */
+
+
+
 /**
  * Extracts traversable free-space geometry from an OccupancyGrid.
  *
@@ -70,7 +114,8 @@ class MapGeometry{
     public:
         MapGeometry(const OccupancyGrid& grid_map);
         void findContours();
-        void trace(Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_successor);
+        void trace(Contour& c, int row, int col, int prev_row, int prev_col);
+        void trace( Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_neighbor);
         void showContours(const cv::Mat& original_image);
         void listContours();
     private:

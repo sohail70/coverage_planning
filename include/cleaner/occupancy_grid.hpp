@@ -15,18 +15,18 @@ struct Point{
     T x_;
     T y_;
 
-    Point<T> operator+(const Point& A){
+    Point<T> operator+(const Point& A) const{
         return Point(x_ + A.x_, y_ + A.y_);
     }
-    Point<T> operator-(const Point& A){
+    Point<T> operator-(const Point& A) const{
         return Point(x_ - A.x_ , y_ - A.y_);
     }
-    Point<T> operator*(T t){
+    Point<T> operator*(T t) const{
         return Point(x_*t , y_*t);
     }
 
     // Use in std::find() in map_geometry class trace function
-    bool operator==(const Point& A){
+    bool operator==(const Point& A) const{
         return (A.x_==x_&& A.y_==y_);
     }
 

@@ -5,6 +5,33 @@
 #include <opencv2/opencv.hpp>
 #include <optional>
 
+
+/**
+ * Build the binary working image used by Suzuki-Abe.
+ *
+ *      1 = foreground = traversable free space
+ *      0 = background = occupied / unknown / non-traversable
+ *
+ * A one-cell background padding is added around the original map so
+ * contour tracing can inspect all 8 neighbors without the foreground
+ * touching the array boundary.
+ *
+ * Border ID 1 is reserved as a synthetic hierarchy root.
+ * Real detected borders therefore start at ID 2.
+ */
+/*
+ * Outer border:
+ *   The border between a foreground (1) connected component
+ *   and the background/0-component that directly surrounds it.
+ *
+ * Hole border:
+ *   The border between a hole (an enclosed 0-component)
+ *   and the foreground (1-component) that directly surrounds that hole.
+ *
+ * Important:
+ *   BOTH outer borders and hole borders are represented by FOREGROUND pixels.
+ */
+
 MapGeometry::MapGeometry(const OccupancyGrid& grid_map): grid_map_(grid_map) {
     Contour image_frame_;
     image_frame_.id_ = 1;
@@ -59,12 +86,114 @@ MapGeometry::MapGeometry(const OccupancyGrid& grid_map): grid_map_(grid_map) {
 
 }
 
+/**
+ * Suzuki-Abe only cares about binary image semantics:
+ *
+ *      1 = foreground
+ *      0 = background
+ *
+ * The algorithm itself does NOT care whether foreground means
+ * "obstacle" or "free space".
+ *
+ *
+ * Previous interpretation:
+ *
+ *      1 = obstacle
+ *      0 = free space
+ *
+ * Then:
+ *
+ *      current == 1 && left == 0
+ *          -> start of an OUTER obstacle contour
+ *
+ *      current >= 1 && right == 0
+ *          -> possible HOLE contour inside the obstacle foreground
+ *
+ *
+ * For BCD we now choose:
+ *
+ *      1 = free space
+ *      0 = obstacle / unknown / non-traversable
+ *
+ * The Suzuki-Abe conditions stay exactly the same:
+ *
+ *      current == 1 && left == 0
+ *          -> start of an OUTER free-space contour
+ *
+ *      current >= 1 && right == 0
+ *          -> start of a HOLE contour in the free-space foreground
+ *
+ * In this interpretation, such a hole usually represents an obstacle
+ * completely enclosed by free space.
+ *
+ *
+ * So:
+ *
+ *      OLD:
+ *          foreground = obstacles
+ *          outer contour = obstacle boundary
+ *          hole contour  = free-space hole inside obstacle region
+ *
+ *      NEW:
+ *          foreground = free space
+ *          outer contour = free-space boundary
+ *          hole contour  = obstacle enclosed by free space
+ *
+ *
+ * The contour-tracing algorithm does not change.
+ * Only the semantic meaning of "foreground" changes.
+ */
+
+ /**
+ * Suzuki-Abe border detection and hierarchy construction.
+ *
+ * The image is scanned row-by-row from left to right.
+ *
+ * NBD:
+ *      ID assigned to each newly discovered border.
+ *
+ * LNBD:
+ *      ID of the most recently encountered known border on the
+ *      current scanline. It is reset to the synthetic root (1)
+ *      at the beginning of every row.
+ *
+ * New border conditions:
+ *
+ *      current == 1 && left == 0
+ *          -> new OUTER border of the foreground
+ *
+ *      current >= 1 && right == 0
+ *          -> new HOLE border
+ *
+ * For a hole start, if current > 1, the current positive border
+ * label becomes LNBD before hierarchy assignment.
+ *
+ * Parent selection:
+ *
+ *      new type != LNBD type
+ *          -> parent(new) = LNBD
+ *
+ *      new type == LNBD type
+ *          -> parent(new) = parent(LNBD)
+ *
+ * In this implementation ID 1 is a synthetic root, so a top-level
+ * contour whose LNBD is 1 receives parent_id = 1.
+ *
+ * After processing each pixel, a labeled pixel updates:
+ *
+ *      LNBD = abs(pixel_label)
+ *
+ * because the sign contains border-state information while the
+ * absolute value identifies the border.
+ */
+
 void MapGeometry::findContours(){
     int contour_count_ = 1; // assuming frame of the picture is the first countor    
-    int LNBD = 1; // the contours vector indices starts with 0 which is the frame index --> this variable is for tracking the border to assign parents in a hierarchy
+    int LNBD = 1; // the contours vector indices starts with 1 which is the frame index --> this variable is for tracking the border to assign parents in a hierarchy
     for(int row = 1 ; row < working_grid_.size() - 1 ; row++)
     {
-        LNBD = 1; // so we reset to zero at each row because the assumption is the FRAME is the parent of all the obstalces inside the image!
+        // LNBD: “What boundary was the last one I crossed before reaching this new boundary?”
+        LNBD = 1; // so we reset to one at each row because the assumption is the FRAME is the parent of all the obstalces inside the image!
         for(int col = 1 ; col < working_grid_.at(row).size() - 1 ; col++ ){
 
             int current_cell_state_,left_cell_state_,right_cell_state_;
@@ -82,26 +211,72 @@ void MapGeometry::findContours(){
                 Contour c;
                 c.id_ = contour_count_;
                 c.is_hole_ = false;
-                c.parent_id_ = LNBD;
-                c.points_.push_back(Point<int>{col,row}) ;
-                trace(c,row, col, row, col-1, Point<int>{col,row}, std::nullopt);
+                /*
+                    Parent rule:
+
+                    new type != LNBD type
+                        => new contour is directly inside LNBD
+                        => parent = LNBD
+
+                    new type == LNBD type
+                        => they are siblings at the same nesting level
+                        => parent = parent(LNBD)
+
+
+                    one caveat! with my current represenation i need to take care of a special case of LNBD==1
+                    because Take the very first real free-space contour:
+                    frame:       is_hole = false
+                    new contour: is_hole = false
+                    parent(new) = parent(LNBD);
+                    You get:
+                        frame 1        parent -1
+                        outer 2        parent -1   // sibling of frame
+                    But you want:
+                        frame 1
+                        └── outer 2
+
+                
+                */
+                if (LNBD == 1)
+                    c.parent_id_ = 1;
+                else if (c.is_hole_ == contours_.at(LNBD-1).is_hole_)
+                    c.parent_id_ = contours_.at(LNBD-1).parent_id_;
+                else
+                    c.parent_id_ = contours_.at(LNBD-1).id_;
+                trace(c,row, col, row, col-1);
                 contours_.push_back(c);
             }
-            // This is the hole scenraio (we are already on obstalce and the right side is free)
-            // If we are on obstalce and both left and right are free then the first if above has the priority
+            // current pixel belongs to free-space foreground,
+            // and the pixel to the right is background/non-traversable.
+            // This is the hole-border starting condition.
             // hole detection must also work when the current pixel was already labeled. so use current>=1
             else if(current_cell_state_ >= 1 &&
                 right_cell_state_ == 0) {
+
+                if (current_cell_state_ > 1)
+                    LNBD = current_cell_state_;
+
                 contour_count_++;
                 Contour c;
                 c.id_ = contour_count_;
                 c.is_hole_ = true;
-                c.parent_id_ = LNBD;
-                c.points_.push_back(Point<int>{col,row}) ;
+
+                if (LNBD == 1)
+                    c.parent_id_ = 1;
+                else if (c.is_hole_ == contours_.at(LNBD-1).is_hole_)
+                    c.parent_id_ = contours_.at(LNBD-1).parent_id_;
+                else
+                    c.parent_id_ = contours_.at(LNBD-1).id_;
+
                 // working_grid_[row][col] = c.id_;
-                trace(c,row, col, row, col+1, Point<int>{col,row}, std::nullopt);
+                trace(c,row, col, row, col+1);
                 contours_.push_back(c);
             }
+            /*
+                why update in the end?
+                Because LNBD is supposed to describe the border encountered before the current newly discovered border.
+                At column col, parent selection should use the history from pixels to the left:
+            */
             if (std::abs(working_grid_[row][col]) > 1) LNBD = std::abs(working_grid_[row][col]); // working_grid_ changes in the trace function 
 
         }
@@ -109,161 +284,410 @@ void MapGeometry::findContours(){
 }
 
 
+/**
+ * Follow one Suzuki-Abe border and label its pixels.
+ *
+ * INPUT
+ * -----
+ * c:
+ *      The contour currently being traced.
+ *      c.id_ is the current NBD (border ID).
+ *
+ * row, col:
+ *      Starting FOREGROUND pixel of the newly detected border.
+ *
+ * prev_row, prev_col:
+ *      Initial BACKGROUND reference pixel used to determine
+ *      the side from which the border following begins.
+ *
+ *      Outer border -> reference is left of start pixel.
+ *      Hole border  -> reference is right of start pixel.
+ *
+ *
+ * OUTPUT / SIDE EFFECTS
+ * ---------------------
+ * 1. c.points_
+ *      Receives the ordered foreground pixels belonging to this border.
+ *
+ * 2. working_grid_
+ *      Border pixels are relabeled with +NBD or -NBD.
+ *
+ *
+ * ================================================================
+ * STAGE 1 — INITIAL CLOCKWISE SEARCH  (Suzuki step 3.1)
+ * ================================================================
+ *
+ * Input:
+ *      start_pixel + initial background reference
+ *
+ * Search clockwise around start_pixel until the first NONZERO
+ * foreground neighbor is found.
+ *
+ * Output:
+ *      first_neighbor
+ *
+ * IMPORTANT:
+ *      first_neighbor is NOT immediately the next traced pixel.
+ *      It becomes the reference direction for the first real
+ *      counter-clockwise border search.
+ *
+ * If no nonzero neighbor exists, the start pixel is an isolated
+ * one-pixel component:
+ *
+ *      label it -NBD
+ *      store it in c.points_
+ *      return
+ *
+ *
+ * ================================================================
+ * STAGE 2 — INITIALIZE BORDER FOLLOWING  (Suzuki step 3.2)
+ * ================================================================
+ *
+ * Set:
+ *
+ *      reference = first_neighbor
+ *      current   = start_pixel
+ *
+ * Meaning:
+ *
+ *      current   = border pixel that we are processing now
+ *      reference = neighbor telling us where the CCW search starts
+ *
+ *
+ * ================================================================
+ * STAGE 3 — FIND NEXT BORDER PIXEL CCW  (Suzuki step 3.3)
+ * ================================================================
+ *
+ * Input:
+ *      current + reference
+ *
+ * Starting immediately after reference, inspect the 8 neighbors
+ * of current in COUNTER-CLOCKWISE order.
+ *
+ * Stop at the first NONZERO pixel.
+ *
+ * Output:
+ *      next = next foreground border pixel
+ *
+ * While examining neighbors, remember whether the pixel directly
+ * to the RIGHT of current:
+ *
+ *      (current.x + 1, current.y)
+ *
+ * was actually examined and was zero.
+ *
+ * This information is needed by the signed NBD labeling rule.
+ *
+ *
+ * ================================================================
+ * STAGE 4 — STORE AND LABEL CURRENT PIXEL  (Suzuki step 3.4)
+ * ================================================================
+ *
+ * Add current to c.points_.
+ *
+ * Then label current:
+ *
+ *      if right-hand zero was examined:
+ *          current = -NBD
+ *
+ *      else if current is still 1:
+ *          current = +NBD
+ *
+ *      else:
+ *          preserve its existing border label
+ *
+ * Meaning of the sign:
+ *
+ *      abs(value) = border ID
+ *
+ *      -NBD means the zero-region on the right was encountered
+ *      while following this border.
+ *
+ * The sign is later used during raster scanning to prevent an
+ * already-followed hole border from being detected again.
+ *
+ *
+ * ================================================================
+ * STAGE 5 — CLOSE OR ADVANCE THE BORDER  (Suzuki step 3.5)
+ * ================================================================
+ *
+ * The border is finished when:
+ *
+ *      current == first_neighbor
+ *      AND
+ *      next == start_pixel
+ *
+ * This means the tracing process has returned to its initial
+ * directed border configuration.
+ *
+ * Otherwise advance:
+ *
+ *      reference = current
+ *      current   = next
+ *
+ * and repeat stages 3-5.
+ *
+ *
+ * HIGH-LEVEL FLOW
+ * ---------------
+ *
+ * start pixel
+ *      |
+ *      | clockwise bootstrap
+ *      v
+ * first_neighbor
+ *      |
+ *      | becomes reference, NOT current
+ *      v
+ * current = start
+ *
+ *      repeat:
+ *          CCW search -> next
+ *          label/store current
+ *          check closure
+ *          reference = current
+ *          current   = next
+ */
 
-    /**
-        feel like i should use another struct for indinces that uses int instead of point which is in double or make point template!
-
-        about lnbd:
-    * LNBD = Last New Border Descriptor.
-    *
-    * While scanning one row from left to right, LNBD stores the ID of the
-    * most recent already-known border that is relevant to the current pixel.
-    *
-    * It is NOT automatically the parent of a newly discovered contour.
-    *
-    * LNBD is used to determine the parent by comparing:
-    *
-    *     1. the type of the NEW contour
-    *     2. the type of the LNBD contour
-    *
-    * Border types:
-    *
-    *     outer contour  -> is_hole_ == false
-    *     hole contour   -> is_hole_ == true
-    *
-    *
-    * Parent rule:
-    *
-    *     +----------------+----------------+----------------------+
-    *     | New contour    | LNBD contour   | Parent of new       |
-    *     +----------------+----------------+----------------------+
-    *     | outer          | outer          | parent(LNBD)         |
-    *     | outer          | hole           | LNBD                 |
-    *     | hole           | outer          | LNBD                 |
-    *     | hole           | hole           | parent(LNBD)         |
-    *     +----------------+----------------+----------------------+
-    *
-    *
-    * Equivalent rule:
-    *
-    *     if new contour and LNBD contour have DIFFERENT types:
-    *
-    *         parent(new) = LNBD
-    *
-    *     if new contour and LNBD contour have the SAME type:
-    *
-    *         parent(new) = parent(LNBD)
-    *
-    *
-    * Intuition:
-    *
-    *     Different type:
-    *
-    *         outer -> hole
-    *         hole  -> outer
-    *
-    *     means the new contour is nested directly inside LNBD.
-    *
-    *
-    *     Same type:
-    *
-    *         outer -> outer
-    *         hole  -> hole
-    *
-    *     means the two contours are siblings, so the new contour gets
-    *     the same parent as LNBD.
-    *
-    *
-    * Example:
-    *
-    *         outer contour ID 2
-    *         ├── hole ID 3
-    *         └── hole ID 4
-    *
-    *     When discovering hole 4, LNBD may be hole 3.
-    *
-    *         new.is_hole_  = true
-    *         LNBD.is_hole_ = true
-    *
-    *     Same type, therefore:
-    *
-    *         parent(4) = parent(3) = 2
-    *
-    *     NOT:
-    *
-    *         parent(4) = 3
-    *
-    *
-    * Special case:
-    *
-    *     If LNBD == 1 and contour 1 is your artificial image/frame border,
-    *     then the new top-level contour gets:
-    *
-    *         parent_id_ = 1
+void MapGeometry::trace( Contour& c, int row, int col, int prev_row, int prev_col)
+{
+    Point<int> current_pixel_{col,row};
+    Point<int> initial_ref_{prev_col, prev_row};
+    // finding the first neighbor using CW movement from the initial_ref_
+    Point<int> initial_dir_ = initial_ref_ - current_pixel_;
+    auto start = std::find(clockwise_.begin() , clockwise_.end() , initial_dir_);
+    int start_index_ = static_cast<int>(start-clockwise_.begin());
+    Point<int> first_neighbor_;
+    bool first_neighbor_found_ = false;
+    // CW movement --> this is initial first neighbor finding
+    for(int i = start_index_; i < start_index_ + 8 ; i++)
+    {
+        int current_index_ = (i+1)%8;
+        Point<int> step = clockwise_.at(current_index_);
+        Point<int> neighbor_cell_{ col + step.x_ , row + step.y_};
+        if (working_grid_[neighbor_cell_.y_][neighbor_cell_.x_] != 0){
+            first_neighbor_ = neighbor_cell_;
+            first_neighbor_found_ = true;
+            break;
+        }
+    }
+    //isolated-pixel case (If the initial CW search finds no nonzero neighbor)
+    if(!first_neighbor_found_){
+        working_grid_[row][col] = -c.id_;
+        c.points_.push_back(current_pixel_);
+        return;
+    }
 
 
-    While scanning the current row from left to right, LNBD remembers the border ID of the last labeled border pixel you passed.
-    so the last border encountered during THIS left-to-right row scan --> That information helps Suzuki determine the hierarchy when a new border begins.
-    Example:
-    scan direction --->
+    Point<int> reference_ = first_neighbor_;
+    Point<int> current_ = current_pixel_;
+    Point<int> next;
 
-    0 0  2 2 2  1 1 1  3 3  1 1
-        ^                  ^
-    border 2           border 3
-
-    As you scan:
-    before reaching border 2:
-    LNBD = 1        // artificial frame
-
-    after passing a pixel labeled ±2:
-    LNBD = 2
-
-    later, after passing a pixel labeled ±3:
-    LNBD = 3
+    // now start the trace using CCW movement (so note that initial neighbor we found is not the next node but only a reference for the start of the movement)
+    while(true){
 
 
-When creating a new contour:
-new contour type = c.is_hole_
-LNBD contour type = contours_[LNBD - 1].is_hole_
+        // now we go CCW
+        Point<int> dir_ = reference_ - current_;
+        auto start = std::find(clockwise_.begin(), clockwise_.end() , dir_);
+        int start_index_ = static_cast<int>(start - clockwise_.begin());
+        bool zero_right_hand_exist = false;
+        bool make_minus_ = false;
+        Point<int> right_hand_background_pixel_; // this is a cell with 0 value which is on the right of the current pixel
+        if(working_grid_[current_.y_][current_.x_+1] == 0){
+            right_hand_background_pixel_ = Point{current_.x_+1,current_.y_}; // this is a cell with 0 value which is on the right of the current pixel
+            zero_right_hand_exist = true;
+        }
+        /*
+            How to do CCW movement on a CW array?
+            so imagine start index is 4 then 
+            i separate the loop with using normal int i = 0 to less than 8 and the array indexing
+            so 
+            i = 0,1,2,3,4,5,6,7
+            now my result need to be 
+            3,2,1,0,-1,-2,-3,-4
+            (well technically it needs to be this but i solve wrapping afterward:) 3,2,1,0,7,6,5,4
 
-Parent rules:
-new outer + LNBD outer -> parent = parent(LNBD)
+            so using start index - 1 , start_index_ - 2 ....., start_index_-8 i get  the above numbers so it would be 
+            j = (start_index_-(i+1))
+            so now i also need to fix the wrapping problem
+            which is something modulo 8 but since negative modulo is weird in c++ lets do:
+            (j+8)%8!
+        */
+        for(int i = 0 ; i < 8 ; i++){
+            //CCW movement 
+            int neighbor_index_ = ((start_index_ - (i+1)) + 8)%8; // CCW movement index in the clockwise_ array
+            auto step = clockwise_.at(neighbor_index_);
+            auto current_neighbor_ = current_ + step; // next CCW neighbor
 
-new outer + LNBD hole  -> parent = LNBD
 
-new hole  + LNBD outer -> parent = LNBD
+            if(zero_right_hand_exist &&  current_neighbor_ == right_hand_background_pixel_)
+                make_minus_ = true;
 
-new hole  + LNBD hole  -> parent = parent(LNBD)
+            if(working_grid_[current_neighbor_.y_][current_neighbor_.x_] != 0){ // foreground test must be != 0, not >= 1. Negative -NBD pixels are still foreground.
+                next = Point<int>{current_neighbor_.x_ , current_neighbor_.y_};
+                // seems like we found the next cell
+                // we put the current cell for now!
+                c.points_.push_back(current_);
 
-Compact rule:
-if (c.is_hole_ != lnbd_contour.is_hole_)
-    c.parent_id_ = LNBD;
-else
-    c.parent_id_ = lnbd_contour.parent_id_;
+                if(make_minus_)
+                 //but “Does that 0 belong to the zero-region whose boundary I am currently following?”
+                /*
+                    If the search actually passes through that right-hand 0, then Suzuki knows:
+                    That 0 is on the background/hole side
+                    of the border I am currently tracing.
+                    Then Suzuki marks:
+                    C = -NBD;
 
-Special case:
-if (LNBD == 1)
-    c.parent_id_ = 1;
+                    The negative sign means roughly:
+                    "This border pixel has the zero-component
+                    I'm currently tracing on its right side."
+                */
+
+                    working_grid_[current_.y_][current_.x_] = -c.id_;
+                else if (working_grid_[current_.y_][current_.x_] == 1)
+                    working_grid_[current_.y_][current_.x_] = c.id_;
+
+
+                // stopping condition
+                if(current_ == first_neighbor_ && next == current_pixel_) return;
+
+                reference_ = current_;
+                current_ = current_neighbor_;
+                break;
+            }
+        }
+
+    }
+
+
+}
 
 
 
-    */
-
-void MapGeometry::trace(Contour& c, int row, int col , int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_successor){
+// Recursion
+void MapGeometry::trace( Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_neighbor)
+{
     Point<int> current_index_{col,row};
     Point<int> previous_index{prev_col,prev_row};
+
+    /*
+        first call:
+            previous_index = initial background reference
+            first_neighbor = empty
+
+        recursive calls:
+            previous_index = previous border pixel / search reference
+            first_neighbor = Suzuki's (i1,j1), kept for stopping condition
+    */
+
+
+    // ---------------------------------------------------------
+    // STEP 3.1 + 3.2
+    // ONLY ON THE FIRST CALL:
+    // find first_neighbor CLOCKWISE from the initial reference.
+    // first_neighbor becomes the reference; current stays at start_pixel.
+    // ---------------------------------------------------------
+    if(!first_neighbor.has_value())
+    {
+        Point<int> dir = previous_index - current_index_;
+        auto start = std::find(
+            clockwise_.begin(),
+            clockwise_.end(),
+            dir);
+
+        if(start == clockwise_.end())
+            return;
+
+        int start_index_ = static_cast<int>(start - clockwise_.begin());
+
+        bool found_neighbor = false;
+
+        for(int i = start_index_; i < start_index_ + 8; i++) {
+            // CLOCKWISE
+            int current_neighbor_index_ = (i+1)%8;
+
+            Point<int> step = clockwise_.at(current_neighbor_index_);
+
+            Point<int> neighbor_index_{ col + step.x_, row + step.y_ };
+
+            if (neighbor_index_.y_ >= static_cast<int>(working_grid_.size()) ||
+                neighbor_index_.y_ < 0 ||
+                neighbor_index_.x_ >= static_cast<int>(working_grid_.at(0).size()) ||
+                neighbor_index_.x_ < 0)
+                continue;
+
+            int neighbor_state_ = working_grid_[neighbor_index_.y_][neighbor_index_.x_];
+
+            if(neighbor_state_ != 0)
+            {
+                first_neighbor = neighbor_index_;
+                found_neighbor = true;
+                break;
+            }
+        }
+
+
+        // isolated foreground pixel:
+        // no nonzero pixel exists in its 8-neighborhood
+        if(!found_neighbor)
+        {
+            working_grid_[current_index_.y_][current_index_.x_] = -c.id_;
+            c.points_.push_back(current_index_);
+            return;
+        }
+
+
+        /*
+            Suzuki step 3.2:
+
+                reference = first_neighbor
+                current   = start_pixel
+
+            IMPORTANT:
+            we DO NOT move current to first_neighbor.
+            first_neighbor is only the reference for the first CCW search.
+        */
+        previous_index = first_neighbor.value();
+    }
+
+
+
+    // ---------------------------------------------------------
+    // STEP 3.3
+    // Search CCW around current, starting after previous_index.
+    // ---------------------------------------------------------
+
     Point<int> dir = previous_index - current_index_;
-    auto start = std::find(clockwise_.begin(),clockwise_.end(),dir);
-    int start_index_ = static_cast<int>(start - clockwise_.begin()) ;
+    auto start = std::find( clockwise_.begin(), clockwise_.end(), dir);
+    if(start == clockwise_.end())
+        return;
+
+    int start_index_ = static_cast<int>(start - clockwise_.begin());
 
     bool found_neighbor = false;
+    bool right_zero_examined = false;
+
+    Point<int> next_index_;
 
 
-    for(int i = start_index_ ; i <start_index_ + 8 ; i++){
-        int current_neighbor_index_ = (i+1)%8;
+    for(int i = 0; i < 8; i++)
+    {
+        /*
+            clockwise_ is stored:
+
+            E, SE, S, SW, W, NW, N, NE
+
+            To move CCW we go backward through the array:
+
+            start-1, start-2, ..., start-8
+        */
+        int current_neighbor_index_ = (start_index_ - (i+1) + 8)%8;
+
         Point<int> step = clockwise_.at(current_neighbor_index_);
-        Point<int> neighbor_index_ {col + step.x_ , row + step.y_}; 
-        
+
+        Point<int> neighbor_index_{ col + step.x_, row + step.y_ };
+
         if (neighbor_index_.y_ >= static_cast<int>(working_grid_.size()) ||
             neighbor_index_.y_ < 0 ||
             neighbor_index_.x_ >= static_cast<int>(working_grid_.at(0).size()) ||
@@ -272,46 +696,86 @@ void MapGeometry::trace(Contour& c, int row, int col , int prev_row, int prev_co
 
         int neighbor_state_ = working_grid_[neighbor_index_.y_][neighbor_index_.x_];
 
-        /*
-            1       -> unvisited foreground, can continue
-            c.id_   -> already visited by THIS contour, can be used to close the loop
-            other ID -> belongs to another contour, do not follow it
-            0       -> background
-        */
-        if (neighbor_state_ == 1 || std::abs(neighbor_state_) == c.id_){
-            if (first_successor.has_value()) {
-                if (current_index_ == start_pixel  && neighbor_index_ == first_successor.value()){
-                    std::cout<<"FINISHED TRACING \n";
-                    return;
-                } 
-            }
-            found_neighbor = true;
-            if(!first_successor.has_value()){
-                first_successor = Point<int>{neighbor_index_.x_,neighbor_index_.y_};
-            }
 
-            // Suzuki-Abe labeling rule for CURRENT pixel
-            if (working_grid_[current_index_.y_][current_index_.x_ + 1] == 0)
-            {
-                working_grid_[current_index_.y_][current_index_.x_] = -c.id_;
-            }
-            else if (working_grid_[current_index_.y_][current_index_.x_] == 1)
-            {
-                working_grid_[current_index_.y_][current_index_.x_] = c.id_;
+        /*
+            Suzuki step 3.4(a):
+
+            If the CCW search actually examines the 0-pixel directly
+            to the right of current, remember it.
+
+            right pixel = (current.x + 1, current.y)
+
+            This means that this zero-component is on the right side
+            of the border currently being followed, so current will
+            later receive -NBD.
+        */
+        if(neighbor_index_.x_ == current_index_.x_ + 1 &&
+           neighbor_index_.y_ == current_index_.y_ &&
+           neighbor_state_ == 0) {
+            right_zero_examined = true;
         }
 
-            c.points_.push_back({current_index_});
-            previous_index = current_index_;
-            current_index_ = neighbor_index_;        
+
+        // first nonzero neighbor is the next border pixel
+        if(neighbor_state_ != 0) {
+            next_index_ = neighbor_index_;
+            found_neighbor = true;
             break;
         }
     }
-    if(!found_neighbor){
-        std::cout<< "No Next border pixel found \n";
+
+
+    if(!found_neighbor) {
+        std::cout << "No Next border pixel found\n";
         return;
     }
-    trace(c,current_index_.y_,current_index_.x_, previous_index.y_ , previous_index.x_, start_pixel, first_successor);
+
+
+
+    // ---------------------------------------------------------
+    // STEP 3.4
+    // Store and label CURRENT pixel.
+    // ---------------------------------------------------------
+
+    c.points_.push_back(current_index_);
+
+
+    if(right_zero_examined) {
+        working_grid_[current_index_.y_][current_index_.x_] = -c.id_;
+    }
+    else if(working_grid_[current_index_.y_][current_index_.x_] == 1) {
+        working_grid_[current_index_.y_][current_index_.x_] = c.id_;
+    }
+
+
+
+    // ---------------------------------------------------------
+    // STEP 3.5
+    //
+    // finish when:
+    //
+    // current == first_neighbor
+    // next    == start_pixel
+    // ---------------------------------------------------------
+
+    if(current_index_ == first_neighbor.value() &&
+       next_index_ == start_pixel)
+    {
+        std::cout << "Finished Tracing Contour : " << c.id_ << "\n";
+        return;
+    }
+
+    /*
+        Recursive version of:
+
+            reference = current;
+            current   = next;
+    */
+    trace(c, next_index_.y_, next_index_.x_, current_index_.y_, current_index_.x_, start_pixel, first_neighbor);
 }
+
+
+
 
 
 void MapGeometry::showContours(const cv::Mat& original_image)
@@ -319,12 +783,24 @@ void MapGeometry::showContours(const cv::Mat& original_image)
     cv::Mat colored_image;
     cv::cvtColor(original_image, colored_image, cv::COLOR_GRAY2BGR);
 
-    for (const auto& c : contours_) {
+    for (const auto& c : contours_)
+    {
+        for (const auto& p : c.points_)
+        {
+            // Contours are stored in padded working_grid_ coordinates.
+            // Original image coordinates are shifted by (-1, -1).
+            const int x = p.x_ - 1;
+            const int y = p.y_ - 1;
 
-        for (const auto& p : c.points_) {
+            // Safety check before accessing cv::Mat.
+            if (x < 0 || x >= colored_image.cols ||
+                y < 0 || y >= colored_image.rows)
+            {
+                continue;
+            }
 
-            colored_image.at<cv::Vec3b>(p.y_, p.x_) =
-                cv::Vec3b(0, 0, 255);  // red
+            colored_image.at<cv::Vec3b>(y, x) =
+                cv::Vec3b(0, 0, 255);
         }
     }
 
@@ -343,9 +819,9 @@ void MapGeometry::listContours(){
         std::cout<<"Contour is_hole:" <<c.is_hole_<<"\n";
         std::cout<<"Contour parent_id_:" <<c.parent_id_<<"\n";
         std::cout<<"Contour Points [row,col]: \n";
-        for(const auto& p : c.points_){
-            std::cout<<"["<<p.y_<<","<<p.x_<<"]"<<"\n";
-        }
+        // for(const auto& p : c.points_){
+        //     std::cout<<"["<<p.y_<<","<<p.x_<<"]"<<"\n";
+        // }
         std::cout<<"==================\n";
     }
 }
