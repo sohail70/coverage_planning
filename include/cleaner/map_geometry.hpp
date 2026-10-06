@@ -140,7 +140,8 @@ class MapGeometry{
         void listContours();
 
         void polygonize();
-        std::vector<Point<int>> traceCrackBoundary(const Contour& c);
+        std::vector<Segment<int>> traceCrackBoundary(const Contour& c);
+        void showCrackBoundaries(const cv::Mat& original_image);
 
     private:
         std::vector<Contour> contours_;
@@ -161,5 +162,8 @@ class MapGeometry{
         }};
 
 
+        // Crack-level geometry: ordered directed cell-edge segments.
+        // Still in padded working-grid coordinates.
+        std::vector<std::vector<Segment<int>>> crack_boundaries_;
 
 };

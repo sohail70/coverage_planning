@@ -940,24 +940,22 @@ void MapGeometry::listContours(){
 
 void MapGeometry::polygonize()
 {
-    if(contours_.empty()){
+    if (contours_.empty()) {
         std::cout << "No Contours!\n";
         return;
     }
 
-    std::vector<std::vector<Segment<int>>> polygons_raw_;
-    polygons_raw_.resize(contours_.size());
+    crack_boundaries_.clear();
+    crack_boundaries_.resize(contours_.size());
 
-    for(const auto& c : contours_)
+    for (const auto& c : contours_)
     {
-        // points_[i] and boundary_sides_[i] must correspond.
-        if(c.points_.size() != c.boundary_sides_.size()){
-            std::cout << "Invalid contour data!\n";
+        // Synthetic Suzuki hierarchy root has no real boundary.
+        if (c.id_ == 1 || c.points_.empty())
             continue;
-        }
-        auto grid_polygon_ = traceCrackBoundary(c);
-    }
 
+        crack_boundaries_[c.id_ - 1] = traceCrackBoundary(c);
+    }
 }
 /*
     What traceCrackBoundary() does
@@ -995,7 +993,7 @@ void MapGeometry::polygonize()
 
 */
 
-std::vector<Point<int>> MapGeometry::traceCrackBoundary(const Contour& c){
+std::vector<Segment<int>> MapGeometry::traceCrackBoundary(const Contour& c){
     std::vector<Segment<int>> segs_;
 
     /*
@@ -1041,12 +1039,15 @@ std::vector<Point<int>> MapGeometry::traceCrackBoundary(const Contour& c){
     // Till now the state is : current vertex and current direction! --> so the current vertex is end_ and current direction thus far is either north or south!
     /*
         At each vertex, try directions relative to the direction you arrived from:
-        1. turn RIGHT
-        2. go STRAIGHT
-        3. turn LEFT
-        4. go BACK
+        evaluate E/S/W/N
+        count valid crack edges
+
+        1 valid -> follow it
+        0 valid -> error
+        2 valid -> diagonal ambiguity
         Why this order? Because my convention is:
-        background stays on the LEFT, free space stays on the RIGHT.
+        background stays on the LEFT, free space stays on the RIGHT. so when we deal with outer border we choose the direction
+        of north so the left would be background(obstalce or 0) and right of the edge would be foreground(freespace or 1) so the convention we choose in suzuku is satisfied
         
         mind taht imagine you are walking on the directed edge so your POV should be in the edge for choosing direction
 
@@ -1129,9 +1130,146 @@ std::vector<Point<int>> MapGeometry::traceCrackBoundary(const Contour& c){
         int SW = working_grid_[current_vertex_.y_][current_vertex_.x_ - 1];
         int NW = working_grid_[current_vertex_.y_ - 1][current_vertex_.x_ - 1];
 
-        
+        int count=0;
+        bool east = (NE==0 && SE != 0);  //!= 0 is important because Suzuki may have changed foreground values to +NBD or -NBD.
+        if(east)
+            count++;
+        bool south = (SE==0 && SW != 0);
+        if(south)
+            count++;
+        bool west = (SW==0 && NW != 0);
+        if(west)
+            count++;
+        bool north = (NW==0 && NE != 0);
+        if(north)
+            count++;
 
+        if(count==0){
+            std::cout<<"ERROR \n";
+            break;
+        }
+        else if (count==1) {
+            if (east) {
+                segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_+1,current_vertex_.y_}});
+                current_vertex_ = Point<int>{current_vertex_.x_+1,current_vertex_.y_};
+            }
+            else if(south){
+                segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_,current_vertex_.y_+1}});
+                current_vertex_ = Point<int>{current_vertex_.x_,current_vertex_.y_+1};
+            }
+            else if(west){
+                segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_-1,current_vertex_.y_}});
+                current_vertex_ = Point<int>{current_vertex_.x_-1,current_vertex_.y_};
+            }
+            else if(north){
+                segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_,current_vertex_.y_-1}});
+                current_vertex_ = Point<int>{current_vertex_.x_,current_vertex_.y_-1};
+            }
+        
+        }
+        else {
+            /*
+                for example:
+
+                FREE | 0
+                -----X-----
+                0  | FREE
+            */
+            std::cout<<"AMBIGUIOUS: TURN LEFT FOR NOW! \n";
+            // for now choose LEFT turn
+            // because it preserves Suzuki's 8-connected foreground semantics
+            /*
+                this might create a polygon that touches itself at a single vertex:
+                    +---+
+                    |   |
+                    +---X---+
+                        |   |
+                        +---+
+            Then, before BCD, we inspect whether the resulting polygon contains repeated vertices / point-touching geometry. If it does, we regularize or split it into BCD-safe simple polygons.
+            
+            */
+            segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_+1,current_vertex_.y_}});
+            current_vertex_ = Point<int>{current_vertex_.x_+1,current_vertex_.y_};
+
+
+        }
+
+        if(current_vertex_==start_){
+            break;
+        }
 
     }
+    return segs_;
 
+}
+
+
+void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
+{
+    if (crack_boundaries_.empty()) {
+        std::cout << "No crack boundaries. Call polygonize() first!\n";
+        return;
+    }
+
+    cv::Mat display;
+
+    if (original_image.channels() == 1)
+        cv::cvtColor(original_image, display, cv::COLOR_GRAY2BGR);
+    else
+        display = original_image.clone();
+
+    for (const auto& boundary : crack_boundaries_)
+    {
+        if (boundary.empty())
+            continue;
+
+        std::vector<cv::Point> points;
+        points.reserve(boundary.size() + 1);
+
+        /*
+         * Crack coordinates are in padded working_grid_ coordinates.
+         * Remove the one-cell Suzuki padding.
+         *
+         * No visualization scaling is done here, so the resulting image
+         * has exactly the same size as showContours().
+         */
+        auto toImagePoint = [](const Point<int>& p)
+        {
+            return cv::Point{
+                p.x_ - 1,
+                p.y_ - 1
+            };
+        };
+
+        points.push_back(toImagePoint(boundary.front().start_));
+
+        for (const auto& seg : boundary)
+            points.push_back(toImagePoint(seg.end_));
+
+        // Draw the whole ordered crack boundary efficiently.
+        cv::polylines(
+            display,
+            points,
+            false,
+            cv::Scalar(0, 0, 255),
+            1,
+            cv::LINE_8
+        );
+
+        /*
+         * Mark the starting point so we can see where this directed
+         * boundary trace began.
+         */
+        cv::circle(
+            display,
+            toImagePoint(boundary.front().start_),
+            2,
+            cv::Scalar(0, 255, 255),
+            -1
+        );
+    }
+
+    // Same behavior as showContours().
+    cv::imshow("Directed Crack Boundaries", display);
+    cv::waitKey(0);
 }
