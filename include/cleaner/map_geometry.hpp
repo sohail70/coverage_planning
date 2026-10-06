@@ -1,6 +1,7 @@
 #pragma once
 #include "cleaner/occupancy_grid.hpp"
 #include <array>
+#include <opencv2/core/traits.hpp>
 #include <vector>
 #include <algorithm>
 #include <iostream>
@@ -120,14 +121,16 @@ struct Contour{
 };
 
 // Geometry Level Data
+template<typename T>
 class Polygon {
 public:
-    std::vector<Point<double>> points_;
+    std::vector<Point<T>> points_;
 };
 
+template<typename T>
 struct PolygonWithHoles {
-    Polygon outer_;
-    std::vector<Polygon> holes_;
+    Polygon<T> outer_;
+    std::vector<Polygon<T>> holes_;
 };
 
 class MapGeometry{
@@ -142,13 +145,17 @@ class MapGeometry{
         void polygonize();
         std::vector<Segment<int>> traceCrackBoundary(const Contour& c);
         void showCrackBoundaries(const cv::Mat& original_image);
+        Polygon<int> makePolygonFromBoundary(const std::vector<Segment<int>>& boundary);
+        void showSimplifiedBoundaries(const cv::Mat& original_image);
 
     private:
         std::vector<Contour> contours_;
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
         std::vector<std::vector<int>> working_grid_; // copy of the grid map to use for suzuki-abe 
-        std::vector<PolygonWithHoles> free_space_regions_;
+        std::vector<PolygonWithHoles<int>> free_space_regions_;
 
+        // Simplified polygon geometry, still padded grid coordinates
+        std::vector<Polygon<int>> grid_polygons_;
 
         std::array<Point<int>, 8> clockwise_ {{
             { 1,  0},  // 0: E
@@ -160,6 +167,7 @@ class MapGeometry{
             { 0, -1},  // 6: N
             { 1, -1},  // 7: NE
         }};
+
 
 
         // Crack-level geometry: ordered directed cell-edge segments.

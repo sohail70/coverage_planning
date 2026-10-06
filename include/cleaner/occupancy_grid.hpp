@@ -31,6 +31,9 @@ struct Point{
     bool operator==(const Point& A) const{
         return (A.x_==x_&& A.y_==y_);
     }
+    bool operator!=(const Point& A) const{
+        return (A.x_!=x_ ||  A.y_!=y_);
+    }
 
     friend std::ostream& operator<<(std::ostream& out , const Point<T>& p){
         out<<"x: "<<p.x_<<", "<<"y: "<<p.y_<<"\n";
@@ -55,6 +58,26 @@ struct Segment{
         return out;
     }
 };
+
+/*
+    A cross/dot product is between vectors and vectors dont have specific position but are just directions!
+    segment 1: A ----> B
+    segment 2:          C ----> D
+
+    u = B - A
+    v = D - C
+    cross(u, v)
+
+*/
+template<typename T>
+T crossProduct2D(const Point<T>& A , const Point<T>& B){
+    return (A.x_*B.y_ - A.y_*B.x_);
+}
+template<typename T>
+T dotProduct2D(const Point<T>& A , const Point<T>& B){
+    return (A.x_*B.x_ + A.y_*B.y_);
+}
+
 
 
 /*

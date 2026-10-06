@@ -3,8 +3,10 @@
 #include <array>
 #include <opencv2/core/matx.hpp>
 #include <opencv2/core/types.hpp>
+#include <opencv2/features2d.hpp>
 #include <opencv2/opencv.hpp>
 #include <optional>
+#include <stdexcept>
 
 
 /**
@@ -946,15 +948,50 @@ void MapGeometry::polygonize()
     }
 
     crack_boundaries_.clear();
+    grid_polygons_.clear();
+
     crack_boundaries_.resize(contours_.size());
+    grid_polygons_.resize(contours_.size());
 
     for (const auto& c : contours_)
     {
-        // Synthetic Suzuki hierarchy root has no real boundary.
         if (c.id_ == 1 || c.points_.empty())
             continue;
 
-        crack_boundaries_[c.id_ - 1] = traceCrackBoundary(c);
+        const std::size_t index = c.id_ - 1;
+
+        // Step 1: exact directed crack boundary.
+        crack_boundaries_[index] = traceCrackBoundary(c);
+
+        // Step 2: reduce it to actual polygon corners.
+        grid_polygons_[index] =
+            makePolygonFromBoundary(crack_boundaries_[index]);
+    }
+
+
+    // Verification:
+    for (const auto& boundary : crack_boundaries_)
+    {
+        if (boundary.empty())
+            continue;
+
+        // Verify that every segment connects to the next one.
+        for (std::size_t i = 0; i + 1 < boundary.size(); ++i)
+        {
+            const auto& current_seg = boundary[i];
+            const auto& next_seg    = boundary[i + 1];
+
+            if (!(current_seg.end_ == next_seg.start_))
+            {
+                std::cout << "INCONSISTENCY between segments "
+                        << i << " and " << i + 1 << "\n";
+            }
+        }
+
+        if (!(boundary.back().end_ == boundary.front().start_))
+        {
+            std::cout << "BOUNDARY IS NOT CLOSED\n";
+        }
     }
 }
 /*
@@ -1271,5 +1308,283 @@ void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
 
     // Same behavior as showContours().
     cv::imshow("Directed Crack Boundaries", display);
+    cv::waitKey(0);
+}
+
+
+
+
+/*
+    1. boundary must not be empty
+
+    2. verify:
+        seg[i].end == seg[i+1].start
+        last.end == first.start
+
+    3. create the ordered vertex sequence
+
+    4. remove consecutive duplicates if any
+
+    5. examine cyclic triples:
+        A -> B -> C
+
+        u = B - A
+        v = C - B
+
+        cross(u,v) == 0 && dot(u,v) > 0
+            -> B is redundant
+
+        otherwise
+            -> B is a real polygon vertex
+
+    6. return Polygon<int>
+*/
+
+Polygon<int> MapGeometry::makePolygonFromBoundary(const std::vector<Segment<int>>& boundary){
+
+    if(boundary.empty())
+    {
+        std::cout<<"Boundary is empty \n";
+        return Polygon<int>();
+    }
+    // Verification:
+    // Verify that every segment connects to the next one.
+    for (std::size_t i = 0; i + 1 < boundary.size(); ++i)
+    {
+        const auto& current_seg = boundary[i];
+        const auto& next_seg    = boundary[i + 1];
+
+        if (!(current_seg.end_ == next_seg.start_))
+        {
+            std::cout << "INCONSISTENCY between segments "
+                    << i << " and " << i + 1 << "\n";
+        return Polygon<int>();
+        }
+    }
+
+    if (!(boundary.back().end_ == boundary.front().start_))
+    {
+        std::cout << "BOUNDARY IS NOT CLOSED\n";
+        return Polygon<int>();
+    }
+
+    std::vector<Point<int>> points_;
+    // create the ordered vertex sequence. we alreeady verified the segments are consecutive in above loop!
+    for (int i = 0 ; i < boundary.size() ; i++){ 
+        points_.push_back(boundary.at(i).start_);
+    }
+
+
+
+    /*
+        A, B, C
+
+        if B is removed:
+            next test = A, C, D --> because after removing B, A and C became neighbors.
+
+        if B is kept:
+            next test = B, C, D
+    
+    */
+    Polygon<int> poly_;
+
+
+    // Phase 1:
+    // simplify linearly from P0 through Pn-1
+    poly_.points_.push_back(points_.at(0));
+
+    for(int i = 1 ; i < points_.size() ; i++){
+        Point<int> A = poly_.points_.back();
+        Point<int> B = points_.at(i); 
+        Point<int> C = points_.at((i+1)%points_.size()); 
+        Point<int> u = B - A;
+        Point<int> v = C - B;
+        if(crossProduct2D(u, v) == 0 && dotProduct2D(u, v) > 0){
+            // B redundant -> do nothing
+        }
+        else{
+            // B is a corner -> keep it
+            poly_.points_.push_back(B) ;
+
+        }
+
+    }
+
+    // phase 2:
+    /*
+        Phase 2 exists only because the polygon is a closed loop AND: border pixel ≠ polygon corner
+        so P0 that we start with is not necessery a corner so we have to use phase 2 and retouch our previous phase 1 findings if necessery!
+
+
+          P4 ---- P0 ---- P1
+          |
+          |
+          P3
+    
+    */
+    // Phase 2:
+    // Clean the closure seam until it is stable.
+    //
+    // We need to check BOTH:
+    //
+    //      last -> first -> second
+    //
+    // and:
+    //
+    //      second-last -> last -> first
+    //
+    // because removing the first point can make the last point redundant,
+    // and removing the last point can make the first point redundant.
+
+    if (poly_.points_.size() < 3) {
+        std::cout << "Degenerate polygon after simplification!\n";
+        return Polygon<int>();
+    }
+
+    while (poly_.points_.size() >= 3)
+    {
+        // ---------------------------------------------------------
+        // Check FIRST point:
+        //
+        //      A -> B -> C
+        //      last  first  second
+        // ---------------------------------------------------------
+        {
+            Point<int> A = poly_.points_.back();
+            Point<int> B = poly_.points_.front();
+            Point<int> C = poly_.points_.at(1);
+
+            Point<int> u = B - A;
+            Point<int> v = C - B;
+
+            if (crossProduct2D(u, v) == 0 &&
+                dotProduct2D(u, v) > 0)
+            {
+                // First point B is redundant.
+                poly_.points_.erase(poly_.points_.begin());
+
+                // Polygon changed, so restart all seam checks.
+                continue;
+            }
+        }
+        // ---------------------------------------------------------
+        // Check LAST point:
+        //
+        //      A -> B -> C
+        // second-last last first
+        // ---------------------------------------------------------
+        {
+            const std::size_t n = poly_.points_.size();
+
+            Point<int> A = poly_.points_.at(n - 2);
+            Point<int> B = poly_.points_.back();
+            Point<int> C = poly_.points_.front();
+
+            Point<int> u = B - A;
+            Point<int> v = C - B;
+
+            if (crossProduct2D(u, v) == 0 &&
+                dotProduct2D(u, v) > 0)
+            {
+                // Last point B is redundant.
+                poly_.points_.pop_back();
+
+                // Polygon changed, so restart all seam checks.
+                continue;
+            }
+        }
+        // Neither the first nor the last point was redundant.
+        // Therefore the closure seam is stable.
+        break;
+    }
+
+
+
+
+    return poly_;
+
+}
+
+
+void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
+{
+    if (grid_polygons_.empty()) {
+        std::cout << "No simplified polygons. Call polygonize() first!\n";
+        return;
+    }
+
+    cv::Mat display;
+
+    if (original_image.channels() == 1)
+        cv::cvtColor(original_image, display, cv::COLOR_GRAY2BGR);
+    else
+        display = original_image.clone();
+
+
+    /*
+     * grid_polygons_ are still stored in padded working_grid_ coordinates.
+     * Remove Suzuki's one-cell padding before drawing:
+     *
+     *      working coordinate (x,y)
+     *              ->
+     *      image coordinate   (x-1,y-1)
+     */
+    auto toImagePoint = [](const Point<int>& p)
+    {
+        return cv::Point{
+            p.x_ - 1,
+            p.y_ - 1
+        };
+    };
+
+
+    for (const auto& polygon : grid_polygons_)
+    {
+        if (polygon.points_.size() < 3)
+            continue;
+
+        std::vector<cv::Point> points;
+        points.reserve(polygon.points_.size());
+
+        for (const auto& p : polygon.points_)
+            points.push_back(toImagePoint(p));
+
+
+        /*
+         * polygon.points_ does NOT repeat the first point at the end,
+         * so closed=true tells OpenCV to draw:
+         *
+         *      last point -> first point
+         */
+        cv::polylines(
+            display,
+            points,
+            true,
+            cv::Scalar(0, 0, 255),
+            1,
+            cv::LINE_8
+        );
+
+
+        /*
+         * Draw every surviving polygon vertex.
+         *
+         * These dots should now appear ONLY at actual turns/corners,
+         * not along straight crack-boundary runs.
+         */
+        for (const auto& p : points)
+        {
+            cv::circle(
+                display,
+                p,
+                2,
+                cv::Scalar(0, 255, 255),
+                -1
+            );
+        }
+    }
+
+
+    cv::imshow("Simplified Polygon Boundaries", display);
     cv::waitKey(0);
 }
