@@ -942,57 +942,49 @@ void MapGeometry::listContours(){
 
 void MapGeometry::polygonize()
 {
-    if (contours_.empty()) {
+    if (contours_.empty())
+    {
         std::cout << "No Contours!\n";
         return;
     }
 
-    crack_boundaries_.clear();
-    grid_polygons_.clear();
-
-    crack_boundaries_.resize(contours_.size());
-    grid_polygons_.resize(contours_.size());
+    boundary_geometries_.clear();
 
     for (const auto& c : contours_)
     {
+        // ID 1 is only the synthetic Suzuki hierarchy root.
         if (c.id_ == 1 || c.points_.empty())
             continue;
 
-        const std::size_t index = c.id_ - 1;
 
-        // Step 1: exact directed crack boundary.
-        crack_boundaries_[index] = traceCrackBoundary(c);
+        BoundaryGeometry geometry;
 
-        // Step 2: reduce it to actual polygon corners.
-        grid_polygons_[index] =
-            makePolygonFromBoundary(crack_boundaries_[index]);
+        // Preserve hierarchy/topology information.
+        geometry.id_        = c.id_;
+        geometry.parent_id_ = c.parent_id_;
+        geometry.is_hole_   = c.is_hole_;
+
+
+        // Exact crack boundary.
+        geometry.crack_boundary_ =
+            traceCrackBoundary(c);
+
+
+        // Simplified polygon representation of the SAME boundary.
+        geometry.polygon_ =
+            makePolygonFromBoundary(
+                geometry.crack_boundary_
+            );
+
+
+        boundary_geometries_.push_back(
+            std::move(geometry)
+        );
     }
+    // Now combine individual boundary rings into complete
+    // free-space regions: outer polygon + its holes.
+    buildFreeSpaceRegions();
 
-
-    // Verification:
-    for (const auto& boundary : crack_boundaries_)
-    {
-        if (boundary.empty())
-            continue;
-
-        // Verify that every segment connects to the next one.
-        for (std::size_t i = 0; i + 1 < boundary.size(); ++i)
-        {
-            const auto& current_seg = boundary[i];
-            const auto& next_seg    = boundary[i + 1];
-
-            if (!(current_seg.end_ == next_seg.start_))
-            {
-                std::cout << "INCONSISTENCY between segments "
-                        << i << " and " << i + 1 << "\n";
-            }
-        }
-
-        if (!(boundary.back().end_ == boundary.front().start_))
-        {
-            std::cout << "BOUNDARY IS NOT CLOSED\n";
-        }
-    }
 }
 /*
     What traceCrackBoundary() does
@@ -1240,11 +1232,10 @@ std::vector<Segment<int>> MapGeometry::traceCrackBoundary(const Contour& c){
 
 }
 
-
 void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
 {
-    if (crack_boundaries_.empty()) {
-        std::cout << "No crack boundaries. Call polygonize() first!\n";
+    if (boundary_geometries_.empty()) {
+        std::cout << "No boundary geometries. Call polygonize() first!\n";
         return;
     }
 
@@ -1255,35 +1246,62 @@ void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
     else
         display = original_image.clone();
 
-    for (const auto& boundary : crack_boundaries_)
+
+    /*
+     * The crack geometry is defined on GRID VERTICES.
+     *
+     * An image with W x H cells has:
+     *
+     *      W+1 grid-vertex columns
+     *      H+1 grid-vertex rows
+     *
+     * Therefore add one drawable row/column so the right and bottom
+     * boundaries are visible.
+     */
+    cv::copyMakeBorder(
+        display,
+        display,
+        0, 1,
+        0, 1,
+        cv::BORDER_CONSTANT,
+        cv::Scalar(0, 0, 0)
+    );
+
+
+    auto toImagePoint = [](const Point<int>& p)
     {
+        /*
+         * BoundaryGeometry is still in padded working_grid_ coordinates.
+         * Remove Suzuki's one-cell padding for visualization.
+         */
+        return cv::Point{
+            p.x_ - 1,
+            p.y_ - 1
+        };
+    };
+
+
+    for (const auto& geometry : boundary_geometries_)
+    {
+        const auto& boundary = geometry.crack_boundary_;
+
         if (boundary.empty())
             continue;
+
 
         std::vector<cv::Point> points;
         points.reserve(boundary.size() + 1);
 
-        /*
-         * Crack coordinates are in padded working_grid_ coordinates.
-         * Remove the one-cell Suzuki padding.
-         *
-         * No visualization scaling is done here, so the resulting image
-         * has exactly the same size as showContours().
-         */
-        auto toImagePoint = [](const Point<int>& p)
-        {
-            return cv::Point{
-                p.x_ - 1,
-                p.y_ - 1
-            };
-        };
-
-        points.push_back(toImagePoint(boundary.front().start_));
+        points.push_back(
+            toImagePoint(boundary.front().start_)
+        );
 
         for (const auto& seg : boundary)
-            points.push_back(toImagePoint(seg.end_));
+            points.push_back(
+                toImagePoint(seg.end_)
+            );
 
-        // Draw the whole ordered crack boundary efficiently.
+
         cv::polylines(
             display,
             points,
@@ -1293,10 +1311,8 @@ void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
             cv::LINE_8
         );
 
-        /*
-         * Mark the starting point so we can see where this directed
-         * boundary trace began.
-         */
+
+        // Mark where this particular boundary trace started.
         cv::circle(
             display,
             toImagePoint(boundary.front().start_),
@@ -1306,7 +1322,7 @@ void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
         );
     }
 
-    // Same behavior as showContours().
+
     cv::imshow("Directed Crack Boundaries", display);
     cv::waitKey(0);
 }
@@ -1505,11 +1521,10 @@ Polygon<int> MapGeometry::makePolygonFromBoundary(const std::vector<Segment<int>
 
 }
 
-
 void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
 {
-    if (grid_polygons_.empty()) {
-        std::cout << "No simplified polygons. Call polygonize() first!\n";
+    if (boundary_geometries_.empty()) {
+        std::cout << "No boundary geometries. Call polygonize() first!\n";
         return;
     }
 
@@ -1521,14 +1536,16 @@ void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
         display = original_image.clone();
 
 
-    /*
-     * grid_polygons_ are still stored in padded working_grid_ coordinates.
-     * Remove Suzuki's one-cell padding before drawing:
-     *
-     *      working coordinate (x,y)
-     *              ->
-     *      image coordinate   (x-1,y-1)
-     */
+    cv::copyMakeBorder(
+        display,
+        display,
+        0, 1,
+        0, 1,
+        cv::BORDER_CONSTANT,
+        cv::Scalar(0, 0, 0)
+    );
+
+
     auto toImagePoint = [](const Point<int>& p)
     {
         return cv::Point{
@@ -1538,10 +1555,13 @@ void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
     };
 
 
-    for (const auto& polygon : grid_polygons_)
+    for (const auto& geometry : boundary_geometries_)
     {
+        const auto& polygon = geometry.polygon_;
+
         if (polygon.points_.size() < 3)
             continue;
+
 
         std::vector<cv::Point> points;
         points.reserve(polygon.points_.size());
@@ -1551,10 +1571,11 @@ void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
 
 
         /*
-         * polygon.points_ does NOT repeat the first point at the end,
-         * so closed=true tells OpenCV to draw:
+         * polygon.points_ stores each vertex once.
          *
-         *      last point -> first point
+         * closed=true draws the final edge:
+         *
+         *      last -> first
          */
         cv::polylines(
             display,
@@ -1566,12 +1587,7 @@ void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
         );
 
 
-        /*
-         * Draw every surviving polygon vertex.
-         *
-         * These dots should now appear ONLY at actual turns/corners,
-         * not along straight crack-boundary runs.
-         */
+        // Surviving vertices after collinear simplification.
         for (const auto& p : points)
         {
             cv::circle(
@@ -1587,4 +1603,149 @@ void MapGeometry::showSimplifiedBoundaries(const cv::Mat& original_image)
 
     cv::imshow("Simplified Polygon Boundaries", display);
     cv::waitKey(0);
+}
+
+
+void MapGeometry::listSimplifiedContours(){
+    // for(const auto& p : grid_polygons_){
+        // std::cout<<p.points_
+    // }
+}
+
+
+/*
+    buildFreeSpaceRegions() is not mathematically mandatory if you design 
+    BCD to consume BoundaryGeometry + hierarchy directly.
+    Its purpose is mainly to give BCD a clean input object
+
+    Right now boundary_geometries_ is still a flat list:
+    boundary 2: outer
+    boundary 3: hole
+    boundary 4: hole
+    boundary 5: outer
+
+    The metadata tells you how they relate, but BCD would have to keep asking:
+    Which holes belong to this outer?
+    Is this another free-space component?
+    Who is the parent?
+
+    buildFreeSpaceRegions() answers those questions once, before BCD:
+    Region A:
+        outer = 2
+        holes = 3, 4
+
+    Region B:
+        outer = 5
+
+    So think of it as assembling rings into actual geometric domains.
+
+
+    For example:
+    1 root
+    └── 2 OUTER
+        ├── 3 HOLE
+        │   └── 5 OUTER
+        └── 4 HOLE
+
+    You should interpret this as:
+    Region A:
+        outer = 2
+        holes = {3, 4}
+
+    Region B:
+        outer = 5
+        holes = {}
+
+    Notice that 5 is underneath 3 in the hierarchy, but it is not part of Region A's holes. It represents another disconnected free-space component trapped inside obstacle 3.
+    So your statement:
+    "go through the boundaries and separate everything that has the same parents"
+
+    is close, but I would phrase it more precisely:
+    For every OUTER boundary:
+
+        find all boundaries where:
+
+            child.parent_id_ == outer.id_
+            AND
+            child.is_hole_ == true
+
+        those are this region's holes
+
+    The tree gives you nesting.
+    PolygonWithHoles gives you one level of that tree at a time:
+    OUTER node
+        +
+    its immediate HOLE children
+
+    Then every deeper OUTER node starts another free-space region.
+
+
+    ONE IMPORTANT CONCEPT:
+    If the obstacle ring is closed, then a robot starting in Region A cannot reach Region B without crossing obstacle cells.
+    So:
+    tree nesting != navigational reachability
+
+
+
+*/
+void MapGeometry::buildFreeSpaceRegions()
+{
+    std::cout << "\n========== Boundary Geometries ==========\n";
+
+    for (const auto& bg : boundary_geometries_)
+    {
+        std::cout << "-----------------------------------------\n";
+        std::cout << "Boundary ID : " << bg.id_ << "\n";
+        std::cout << "Parent ID   : " << bg.parent_id_ << "\n";
+        std::cout << "Type        : "
+                  << (bg.is_hole_ ? "HOLE" : "OUTER")
+                  << "\n";
+
+        std::cout << "Polygon vertices (" 
+                  << bg.polygon_.points_.size()
+                  << "):\n";
+
+        for (std::size_t i = 0; i < bg.polygon_.points_.size(); ++i)
+        {
+            const auto& p = bg.polygon_.points_[i];
+
+            std::cout << "    [" << i << "] "
+                      << "(" << p.x_ << ", " << p.y_ << ")\n";
+        }
+
+        std::cout << "\n";
+    }
+
+    std::cout << "=========================================\n";
+
+
+    free_space_regions_.push_back(PolygonWithHoles<int>()); // Empty polygon at index 0 as the root
+    int size = 1;
+    for (const auto& bg : boundary_geometries_){
+        PolygonWithHoles<int> poly_; // so this poly_ is either a outer or a hole in this iteration
+        if(!bg.is_hole_){
+            size++;
+            free_space_regions_.resize(size);
+            free_space_regions_.at(bg.parent_id_).outer_ = bg.polygon_;
+        }        
+        else{
+            free_space_regions_.at(bg.parent_id_ - 1).holes_.push_back(bg.polygon_);
+        }
+    }
+
+
+
+    // Debug
+    for (int i = 0 ; i < free_space_regions_.size() ; i++){
+        std::cout<<"Region "<<i<<" : \n";
+        auto region = free_space_regions_.at(i);
+        auto outer = region.outer_;
+        auto holes = region.holes_;
+        std::cout<<"Outer Points: "<<"\n";
+        for(const auto& p : outer.points_){
+            std::cout<<"["<<p.x_<<","<<p.y_<<"]"<<"\n";
+        }
+        std::cout<<"This outer has "<<holes.size()<<" holes \n";
+        std::cout<<"---------------\n";
+    }
 }

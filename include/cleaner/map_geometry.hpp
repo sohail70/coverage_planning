@@ -120,6 +120,11 @@ struct Contour{
 
 };
 
+
+
+
+
+
 // Geometry Level Data
 template<typename T>
 class Polygon {
@@ -132,6 +137,44 @@ struct PolygonWithHoles {
     Polygon<T> outer_;
     std::vector<Polygon<T>> holes_;
 };
+
+
+
+struct BoundaryGeometry
+{
+    /*
+     * Identity inherited from the Suzuki contour.
+     *
+     * id_ and parent_id_ preserve the hierarchy so later stages
+     * do not need to search back through contours_.
+     */
+    int id_;
+    int parent_id_;
+
+    /*
+     * false -> outer boundary of a free-space component
+     * true  -> hole boundary inside free space
+     */
+    bool is_hole_;
+
+
+    /*
+     * Exact raster crack geometry.
+     *
+     * Ordered directed unit grid edges.
+     * Still in padded working-grid coordinates.
+     */
+    std::vector<Segment<int>> crack_boundary_;
+
+
+    /*
+     * Simplified polygon ring derived from crack_boundary_.
+     *
+     * Straight runs have been compressed to their corner vertices.
+     */
+    Polygon<int> polygon_;
+};
+
 
 class MapGeometry{
     public:
@@ -147,15 +190,13 @@ class MapGeometry{
         void showCrackBoundaries(const cv::Mat& original_image);
         Polygon<int> makePolygonFromBoundary(const std::vector<Segment<int>>& boundary);
         void showSimplifiedBoundaries(const cv::Mat& original_image);
+        void listSimplifiedContours();
 
     private:
-        std::vector<Contour> contours_;
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
         std::vector<std::vector<int>> working_grid_; // copy of the grid map to use for suzuki-abe 
-        std::vector<PolygonWithHoles<int>> free_space_regions_;
 
-        // Simplified polygon geometry, still padded grid coordinates
-        std::vector<Polygon<int>> grid_polygons_;
+
 
         std::array<Point<int>, 8> clockwise_ {{
             { 1,  0},  // 0: E
@@ -170,8 +211,41 @@ class MapGeometry{
 
 
 
-        // Crack-level geometry: ordered directed cell-edge segments.
-        // Still in padded working-grid coordinates.
-        std::vector<std::vector<Segment<int>>> crack_boundaries_;
+
+
+        // Suzuki result.
+        std::vector<Contour> contours_;
+
+        // Derived polygon geometry, while preserving Suzuki hierarchy.
+        std::vector<BoundaryGeometry> boundary_geometries_;
+
+        // Final regions that will be sent to BCD.
+        std::vector<PolygonWithHoles<int>> free_space_regions_;
+
+
+
+        /*
+        converting:
+
+            1 root
+            2 outer
+            ├── 3 hole
+            │   └── 5 outer
+            └── 4 hole
+
+        TO:
+
+            free_space_regions_[0]
+                outer = polygon of 2
+                holes = polygon of 3
+                        polygon of 4
+
+            free_space_regions_[1]
+                outer = polygon of 5
+                holes = none
+        
+        */
+        void buildFreeSpaceRegions();
+
 
 };

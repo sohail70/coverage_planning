@@ -5,9 +5,9 @@ int main(int argc , char* argv[]){
     MapGeometry map_geometry_(image_) ;
     map_geometry_.findContours();
     // map_geometry_.showContours(image_.getImage());
-    map_geometry_.listContours();
+    // map_geometry_.listContours();
     map_geometry_.polygonize();
-    map_geometry_.showCrackBoundaries(image_.getImage());
-    // map_geometry_.showSimplifiedBoundaries(image_.getImage());
+    // map_geometry_.showCrackBoundaries(image_.getImage());
+    map_geometry_.showSimplifiedBoundaries(image_.getImage());
 
 }
