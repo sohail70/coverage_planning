@@ -64,7 +64,7 @@
  *
  * Output:
  *   - outer free-space boundaries
- *   - obstacle holes inside free space
+ *   - obstacle holes inside free space --> holes are the ones enclosed by the freespace (basically black region)
 
 
  *   XXXXXXXXXXXXXXXXXXXX
@@ -125,21 +125,6 @@ struct Contour{
 
 
 
-// Geometry Level Data
-template<typename T>
-class Polygon {
-public:
-    std::vector<Point<T>> points_;
-};
-
-template<typename T>
-struct PolygonWithHoles {
-    Polygon<T> outer_;
-    std::vector<Polygon<T>> holes_;
-};
-
-
-
 struct BoundaryGeometry
 {
     /*
@@ -175,6 +160,13 @@ struct BoundaryGeometry
     Polygon<int> polygon_;
 };
 
+template<typename T>
+struct FreeSpaceRegion{
+    PolygonWithHoles<T> geometry_;
+    int outer_boundary_id_;
+
+    bool reachable_ = false; //reachable_ = reachable from the robot without crossing an obstacle, according to static connected-component topology
+};
 
 class MapGeometry{
     public:
@@ -183,6 +175,8 @@ class MapGeometry{
         void trace(Contour& c, int row, int col, int prev_row, int prev_col);
         void trace( Contour& c, int row, int col, int prev_row, int prev_col, const Point<int>& start_pixel, std::optional<Point<int>> first_neighbor);
         void showContours(const cv::Mat& original_image);
+        void showNBD(int x0, int y0, int width, int height);
+
         void listContours();
 
         void polygonize();
@@ -191,6 +185,9 @@ class MapGeometry{
         Polygon<int> makePolygonFromBoundary(const std::vector<Segment<int>>& boundary);
         void showSimplifiedBoundaries(const cv::Mat& original_image);
         void listSimplifiedContours();
+
+
+        void determineReachableRegion(const Point<double>& robot_position);
 
     private:
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
@@ -220,7 +217,7 @@ class MapGeometry{
         std::vector<BoundaryGeometry> boundary_geometries_;
 
         // Final regions that will be sent to BCD.
-        std::vector<PolygonWithHoles<int>> free_space_regions_;
+        std::vector<FreeSpaceRegion<int>> free_space_regions_;
 
 
 

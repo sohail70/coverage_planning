@@ -1,8 +1,11 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <math.h>
 #include <ostream>
+#include <vector>
 
 /*
     Point<int> for image --> basically x_ is horizontal so its column and y_ is vertical so it means rows in a image!
@@ -59,6 +62,24 @@ struct Segment{
     }
 };
 
+
+// Geometry Level Data
+template<typename T>
+class Polygon {
+public:
+    std::vector<Point<T>> points_;
+};
+
+template<typename T>
+struct PolygonWithHoles {
+    Polygon<T> outer_;
+    std::vector<Polygon<T>> holes_;
+};
+
+
+
+
+
 /*
     A cross/dot product is between vectors and vectors dont have specific position but are just directions!
     segment 1: A ----> B
@@ -78,7 +99,94 @@ T dotProduct2D(const Point<T>& A , const Point<T>& B){
     return (A.x_*B.x_ + A.y_*B.y_);
 }
 
+enum class Orientation {
+    CW,
+    CCW,
+    COLLINEAR,
+};
 
+/*
+    is c to the left or right ofthe directed line from a to b? To answer that, we need two vectors that start from the same origin.
+
+    Image coordinates currently have +y downward, because they come from the image/grid. 
+    Therefore the names CW and CCW from the cross-product sign are visually reversed compared with normal Cartesian coordinates.
+    So be careful about the semantics
+
+*/
+template<typename T>
+Orientation orientationTest(const Point<T>& a , const Point<T>& b , const Point<T>& c) {
+    Point<T> AB = b - a;
+    Point<T> AC = c - a;
+    T cross = crossProduct2D(AB, AC);
+    if(cross < 0)
+        return Orientation::CW;
+    else if(cross > 0)
+        return Orientation::CCW;    
+    else
+        return Orientation::COLLINEAR;
+
+}
+
+inline Orientation orientationTest( const Point<int>& A, const Point<int>& B, const Point<double>& C) {
+    double AB_x = static_cast<double>(B.x_ - A.x_);
+    double AB_y = static_cast<double>(B.y_ - A.y_);
+    double AC_x = C.x_ - static_cast<double>(A.x_);
+    double AC_y = C.y_ - static_cast<double>(A.y_);
+    double cross =
+        AB_x * AC_y -
+        AB_y * AC_x;
+    if (cross < 0.0)
+        return Orientation::CW;
+    if (cross > 0.0)
+        return Orientation::CCW;
+    return Orientation::COLLINEAR;
+}
+
+
+enum class PointState {
+    INSIDE,
+    OUTSIDE,
+    BOUNDARY,
+};
+
+inline PointState pointInPolygon(const Point<double> P, const Polygon<int>& polygon) {
+    std::vector<Point<double>> intersections;
+    int count = 0;
+    for (int i = 0 ; i <polygon.points_.size() ; i++)
+    {
+        Point<int>  A = polygon.points_.at(i);
+        Point<int>  B = polygon.points_.at((i+1)%polygon.points_.size());
+
+        if (orientationTest(A, B, P) == Orientation::COLLINEAR){
+            // Bounding box
+            if(P.x_ >= std::min(A.x_,B.x_) &&
+               P.x_ <= std::max(A.x_,B.x_) &&
+               P.y_ >= std::min(A.y_ , B.y_) &&
+               P.y_ <= std::max(A.y_ , B.y_)
+                ){
+
+                return PointState::BOUNDARY;
+            }
+        }
+
+        if ((P.y_ < B.y_) != (P.y_ < A.y_)){
+            double t = (P.y_ - A.y_) / (B.y_ - A.y_);
+            double xIntersection = A.x_ + t * (B.x_ - A.x_);
+            if(xIntersection > P.x_){
+                intersections.push_back({xIntersection , P.y_});
+                count++;
+            }
+        }
+    }
+
+    if ((count%2)==0){
+        return PointState::OUTSIDE;
+    }
+    else if((count%2)!=0){
+        return PointState::INSIDE;
+    }
+
+}
 
 /*
 

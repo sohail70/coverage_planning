@@ -38,7 +38,7 @@
 MapGeometry::MapGeometry(const OccupancyGrid& grid_map): grid_map_(grid_map) {
     Contour image_frame_;
     image_frame_.id_ = 1;
-    image_frame_.is_hole_ = false;
+    image_frame_.is_hole_ = true; // initialization has effect on the reachability test to see if the robot can reach the different freespace regions or not!
     image_frame_.parent_id_ = -1;
     // image_frame_.points_ --> later put the borders of the image frame in this!
     contours_.push_back(image_frame_);
@@ -253,6 +253,11 @@ void MapGeometry::findContours(){
             // and the pixel to the right is background/non-traversable.
             // This is the hole-border starting condition.
             // hole detection must also work when the current pixel was already labeled. so use current>=1
+            /*
+                Important to note that :
+                +NBD  → eligible for this detection
+                -NBD  → not eligible --> becuase current_cell_state_ test is >=1
+            */
             else if(current_cell_state_ >= 1 &&
                 right_cell_state_ == 0) {
 
@@ -869,6 +874,56 @@ void MapGeometry::showContours(const cv::Mat& original_image)
 
     cv::imshow("Contours", colored_image);
     cv::waitKey(0);
+}
+
+// Debug tool , think of the argument as an ROI rectangle to show some part of the image 
+void MapGeometry::showNBD(int start_row, int start_col,
+                          int roi_height, int roi_width)
+{
+    const int CELL_SIZE = 20;
+
+    cv::Mat image(roi_height * CELL_SIZE,
+                  roi_width * CELL_SIZE,
+                  CV_8UC3,
+                  cv::Scalar(255, 255, 255));
+
+    for (int r = 0; r < roi_height; ++r)
+    {
+        for (int c = 0; c < roi_width; ++c)
+        {
+            const int grid_r = start_row + r;
+            const int grid_c = start_col + c;
+
+            if (grid_r < 0 || grid_r >= static_cast<int>(working_grid_.size()) ||
+                grid_c < 0 || grid_c >= static_cast<int>(working_grid_[grid_r].size()))
+                continue;
+
+            const int value = working_grid_[grid_r][grid_c];
+
+            cv::rectangle(
+                image,
+                cv::Point(c * CELL_SIZE, r * CELL_SIZE),
+                cv::Point((c + 1) * CELL_SIZE - 1,
+                          (r + 1) * CELL_SIZE - 1),
+                cv::Scalar(200, 200, 200),
+                1);
+
+            cv::putText(
+                image,
+                std::to_string(value),
+                cv::Point(c * CELL_SIZE + 1,
+                          r * CELL_SIZE + CELL_SIZE - 3),
+                cv::FONT_HERSHEY_SIMPLEX,
+                0.35,
+                cv::Scalar(0, 0, 0),
+                1);
+        }
+    }
+
+    cv::namedWindow("NBD", cv::WINDOW_NORMAL);
+    cv::imshow("NBD", image);
+    cv::waitKey(0);
+    cv::destroyWindow("NBD");
 }
 
 
@@ -1719,18 +1774,28 @@ void MapGeometry::buildFreeSpaceRegions()
     std::cout << "=========================================\n";
 
 
-    free_space_regions_.push_back(PolygonWithHoles<int>()); // Empty polygon at index 0 as the root
-    int size = 1;
-    for (const auto& bg : boundary_geometries_){
-        PolygonWithHoles<int> poly_; // so this poly_ is either a outer or a hole in this iteration
-        if(!bg.is_hole_){
-            size++;
-            free_space_regions_.resize(size);
-            free_space_regions_.at(bg.parent_id_).outer_ = bg.polygon_;
-        }        
-        else{
-            free_space_regions_.at(bg.parent_id_ - 1).holes_.push_back(bg.polygon_);
+    // free_space_regions_.push_back(PolygonWithHoles<int>()); // Empty polygon at index 0 as the root
+    for (const auto& outer : boundary_geometries_)
+    {
+        if (outer.is_hole_)
+            continue;
+
+        FreeSpaceRegion<int> region;
+
+        region.outer_boundary_id_ = outer.id_;
+        region.geometry_.outer_ = outer.polygon_;
+        region.reachable_ = false;
+
+        for (const auto& child : boundary_geometries_)
+        {
+            if (child.is_hole_ &&
+                child.parent_id_ == outer.id_)
+            {
+                region.geometry_.holes_.push_back(child.polygon_);
+            }
         }
+
+        free_space_regions_.push_back(region);
     }
 
 
@@ -1739,8 +1804,8 @@ void MapGeometry::buildFreeSpaceRegions()
     for (int i = 0 ; i < free_space_regions_.size() ; i++){
         std::cout<<"Region "<<i<<" : \n";
         auto region = free_space_regions_.at(i);
-        auto outer = region.outer_;
-        auto holes = region.holes_;
+        auto outer = region.geometry_.outer_;
+        auto holes = region.geometry_.holes_;
         std::cout<<"Outer Points: "<<"\n";
         for(const auto& p : outer.points_){
             std::cout<<"["<<p.x_<<","<<p.y_<<"]"<<"\n";
@@ -1748,4 +1813,85 @@ void MapGeometry::buildFreeSpaceRegions()
         std::cout<<"This outer has "<<holes.size()<<" holes \n";
         std::cout<<"---------------\n";
     }
+}
+
+
+/*
+    test for reachable regions:
+        robot inside outer
+        AND
+        robot not inside any hole
+        so:
+
+            set every region reachable = false
+            for every region:
+
+                if robot is NOT inside outer:
+                    continue
+
+                check all holes
+
+                if robot lies inside a hole:
+                    continue
+
+                this is the connected free-space region containing the robot
+
+                region.reachable = true
+    
+
+        ALG:
+            1. No regions -> return
+            2. Reset every reachable_ flag
+            3. For each region:
+                robot must be INSIDE outer
+                robot must not be INSIDE/BOUNDARY of any hole
+            4. Mark that region reachable
+            5. Return immediately
+            6. If none matched, print failure
+
+
+        
+            Some note about why using Point<double>
+            (10,20) -------- (11,20)
+                |                |
+                |       X        |
+                |                |
+            (10,21) -------- (11,21)
+
+            The center X of that cell is:
+            (10.5, 20.5) --> so it makes sense to use Point<double> to represent some continuous point inside of this
+*/
+
+void MapGeometry::determineReachableRegion(const Point<double>& robot_position) { // IMPORTANT: robot_position is Point<double> and it means continuous point inside the grid coordinate system not world coordinate
+    if(free_space_regions_.empty()){
+        std::cout<<"NO FREE REGION \n";
+        return;
+    }
+
+    for (auto& region : free_space_regions_) {
+        region.reachable_ = false; // Reset!
+    }
+
+    for(auto& region : free_space_regions_){
+        
+        if(pointInPolygon(robot_position, region.geometry_.outer_) == PointState::INSIDE){
+            bool insideAnyHole = false;
+            for(const auto& hole : region.geometry_.holes_){
+                auto state = pointInPolygon(robot_position, hole);
+                if(state == PointState::INSIDE || state == PointState::BOUNDARY){
+                    insideAnyHole = true;
+                    break;
+                }
+            }
+            if(!insideAnyHole){
+                region.reachable_ = true;
+                std::cout << "Reachable region found. Outer boundary ID: " << region.outer_boundary_id_ << "\n";
+                return; // For one robot position, we expect one connected free-space region.
+            }
+
+
+        }
+    }
+    std::cout << "Robot is not inside any valid free-space region.\n";
+
 }
