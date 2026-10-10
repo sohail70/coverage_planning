@@ -1,11 +1,13 @@
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/occupancy_grid.hpp"
+#include <algorithm>
 #include <array>
 #include <opencv2/core/matx.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/opencv.hpp>
 #include <optional>
+#include <random>
 #include <stdexcept>
 
 
@@ -1075,6 +1077,30 @@ void MapGeometry::polygonize()
 
         8. Repeat until the starting directed edge is reached again.
 
+    OR:
+        1. Start on an edge separating:
+
+            background | free
+
+            with background on your LEFT
+            and free on your RIGHT.
+
+        2. Walk to the next grid vertex.
+
+        3. At that vertex, inspect the 4 surrounding cells.
+
+        4. Find outgoing edge(s) that still satisfy:
+
+            LEFT  = background
+            RIGHT = free
+
+        5. If:
+            1 edge valid -> take it
+            2 edges valid -> diagonal ambiguity -> turn LEFT
+            0 edges valid -> error
+
+        6. Update your direction and repeat until back at start.
+
 */
 
 std::vector<Segment<int>> MapGeometry::traceCrackBoundary(const Contour& c){
@@ -1235,33 +1261,38 @@ std::vector<Segment<int>> MapGeometry::traceCrackBoundary(const Contour& c){
         else if (count==1) {
             if (east) {
                 segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_+1,current_vertex_.y_}});
-                current_vertex_ = Point<int>{current_vertex_.x_+1,current_vertex_.y_};
+                dir = Point<int>{1,0}; // East direction
+                current_vertex_ = current_vertex_ + dir;
             }
             else if(south){
                 segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_,current_vertex_.y_+1}});
-                current_vertex_ = Point<int>{current_vertex_.x_,current_vertex_.y_+1};
+                dir = Point<int>{0,1}; // South direction
+                current_vertex_ = current_vertex_ + dir;
             }
             else if(west){
                 segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_-1,current_vertex_.y_}});
-                current_vertex_ = Point<int>{current_vertex_.x_-1,current_vertex_.y_};
+                dir = Point<int>{-1,0}; // West direction
+                current_vertex_ = current_vertex_ + dir;
             }
             else if(north){
                 segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_,current_vertex_.y_-1}});
-                current_vertex_ = Point<int>{current_vertex_.x_,current_vertex_.y_-1};
+                dir = Point<int>{0,-1}; // North direction
+                current_vertex_ = current_vertex_ + dir;
             }
         
         }
-        else {
+        else if (count==2) {
             /*
                 for example:
 
                 FREE | 0
                 -----X-----
-                0  | FREE
+                  0  | FREE
             */
             std::cout<<"AMBIGUIOUS: TURN LEFT FOR NOW! \n";
             // for now choose LEFT turn
             // because it preserves Suzuki's 8-connected foreground semantics
+            // If you turn right at the checkerboard ambiguity you stay wrapped around the same free cell instead of transferring to the diagonally connected free cell. --> so we basically go to left because it covers the diagonal cell's edge and in 8 neighbor suzuki diagonal cells belong to same contours
             /*
                 this might create a polygon that touches itself at a single vertex:
                     +---+
@@ -1270,12 +1301,42 @@ std::vector<Segment<int>> MapGeometry::traceCrackBoundary(const Contour& c){
                         |   |
                         +---+
             Then, before BCD, we inspect whether the resulting polygon contains repeated vertices / point-touching geometry. If it does, we regularize or split it into BCD-safe simple polygons.
+
+            but left turn depends on where you are facing right now!
+                Facing EAST  -> turn left -> NORTH
+                Facing NORTH -> turn left -> WEST
+                Facing WEST  -> turn left -> SOUTH
+                Facing SOUTH -> turn left -> EAST
+
+                        N
+                        ↑
+                        |
+                    W ← + → E
+                        |
+                        ↓
+                        S
+
+                left-turn cycle:
+
+                E -> N -> W -> S -> E
             
             */
-            segs_.push_back({current_vertex_ , Point<int>{current_vertex_.x_+1,current_vertex_.y_}});
-            current_vertex_ = Point<int>{current_vertex_.x_+1,current_vertex_.y_};
+            if (dir == Point<int>{1,0}) // East direction
+                dir = Point<int>{0,-1};
+            else if (dir == Point<int>{0,1}) // South direction
+                dir = Point<int>{1,0};
+            else if (dir == Point<int>{-1,0}) // West direction
+                dir = Point<int>{0,1};
+            else if (dir == Point<int>{0,-1}) // North direction
+                dir = Point<int>{-1,0};
+            segs_.push_back({current_vertex_ , current_vertex_ + dir});
+            current_vertex_ = current_vertex_ + dir;
 
 
+        }
+        else {
+            std::cout << "ERROR: unexpected crack-edge count\n";
+            break;
         }
 
         if(current_vertex_==start_){
@@ -1894,4 +1955,284 @@ void MapGeometry::determineReachableRegion(const Point<double>& robot_position) 
     }
     std::cout << "Robot is not inside any valid free-space region.\n";
 
+}
+
+
+
+
+
+/*
+
+    1. Take reachable PolygonWithHoles.
+
+    2. Collect x coordinates of outer + hole vertices.
+
+    3. Sort unique x coordinates.
+
+    4. Between consecutive x coordinates,
+    determine the vertical FREE intervals.
+
+    5. Compare free intervals from one slab to the next.
+
+    6. Connectivity unchanged
+        -> continue existing BCD cell
+
+    1 becomes 2
+        -> IN / split
+
+    2 becomes 1
+        -> OUT / merge
+
+    7. Build adjacency at split/merge events.
+
+*/
+
+std::vector<FreeSpaceRegion<int>>& MapGeometry::getFreeRegions(){
+    return free_space_regions_;
+}
+
+void MapGeometry::BCD(const PolygonWithHoles<int>& polygon){
+    // 2. Collect x coordinates of outer + hole vertices.
+    std::vector<int> critical_x;
+    for(const auto& p   : polygon.outer_.points_) {
+        critical_x.push_back(p.x_);
+    }
+
+    for(const auto& hole  : polygon.holes_){
+        for(const auto& p : hole.points_ ){
+            critical_x.push_back(p.x_);
+        }
+    }
+
+    // 3. Sort unique x coordinates.
+    std::sort(critical_x.begin(),critical_x.end(), [](int a , int b){
+        return a < b;
+    });
+    /*
+        std::unique() rearranges it conceptually into:
+        1, 74, 191, 630, ?, ?, ?
+                        ^
+                        |
+                returned iterator
+
+        It moves one copy of every unique value toward the front and returns an iterator pointing to the first unwanted element.
+        now we can erase from that retured iterator to the end
+    
+    */
+    critical_x.erase(std::unique(critical_x.begin(), critical_x.end()),critical_x.end());
+
+    for(const auto& x : critical_x){
+        std::cout<<x<<",";
+    }
+    std::cout<<"\n";
+
+
+
+    vertical_slices_.clear();
+    // using the mid points of consecutive x's to avoid degenerate cases of vertical x being on a vertical side of a rectangle for example
+    for (int i = 0 ; i + 1 < critical_x.size() ; i++){
+        VerticalSlice vertical_slice_;
+        double x1 = critical_x.at(i);
+        double x2 = critical_x.at(i + 1);
+        double mid = (x1 + x2) / 2;
+        vertical_slice_.x_ = mid;
+        vertical_slices_.push_back(vertical_slice_);
+    }
+
+    // 4. Between consecutive x coordinates, determine the vertical FREE intervals.
+    /*
+        Because your sample x is between critical x-values, it will not lie directly on a polygon vertex or vertical polygon edge, which avoids most degeneracy problems.
+    */
+
+
+    for (auto& v : vertical_slices_){
+        auto intersections =  getYIntersections(v.x_ , polygon);
+
+        if (intersections.size() < 2)
+            continue;
+
+
+        double x = v.x_;
+        for(int i = 0 ; i + 1 < intersections.size() ; i++) {
+            bool invalid = false;
+            double mid_y_ = (intersections.at(i).y_ + intersections.at(i+1).y_) / 2;
+            /*
+                midpoint test needs to mean:
+                    midpoint is INSIDE outer
+                    AND
+                    midpoint is OUTSIDE every hole
+
+                    so:
+                        test midpoint
+
+                        first:
+                            is it inside outer?
+                            no -> invalid
+
+                        then:
+                            is it inside any hole?
+                            yes -> invalid
+
+                        otherwise:
+                            free
+            */
+            auto outerState = pointInPolygon(Point<double>{x,mid_y_}, polygon.outer_);
+            if (outerState != PointState::INSIDE)
+            {
+                invalid = true;
+            }
+            else { 
+                // finding the free intervals! I think we can take a the mid point of each intervals and test to see if its in a hole (obstalce region)
+                for (const auto& hole : polygon.holes_){
+                    auto holeState = pointInPolygon(Point<double>{x,mid_y_}, hole);
+                    if (holeState == PointState::INSIDE || holeState == PointState::BOUNDARY)
+                    {
+                        invalid = true;
+                        break;
+                    }
+                }
+            }
+
+
+           
+
+            if (!invalid){
+                v.free_intervals_.push_back({Point<double>{x , intersections.at(i).y_ }, Point<double>{x , intersections.at(i+1).y_}});
+
+            }
+
+        }
+
+    }
+
+
+    for (const auto& slice : vertical_slices_){
+       std::cout<<"SLICE X =  " << slice.x_ << "\n";
+       for (const auto& interval : slice.free_intervals_){
+        std::cout<<"["<<interval.start_<<","<<interval.end_<<"]\n";
+       }
+       std::cout<<"-----------\n";
+       
+    }
+
+
+
+}
+
+
+std::vector<Point<double>> MapGeometry::getYIntersections(double x, const PolygonWithHoles<int>& polygon) {
+    auto outer = polygon.outer_;
+    auto holes = polygon.holes_;
+    std::vector<Point<double>> intersectionPoints;
+
+    // Outer intersections
+    for(int i = 0 ; i < outer.points_.size() ; i++){
+        Point<int> A = outer.points_.at(i);
+        Point<int> B = outer.points_.at((i+1)%outer.points_.size());
+        // is line x intersecting with segment AB?
+        if( (x < B.x_) != (x < A.x_) ) {
+            // whats the intersection point?
+            double t = (x - A.x_) / (B.x_ - A.x_); // since line x is infinite then its not like a point in polygon and i dont have to test wheter the intersection y is bigger than some point.y_!
+            Point<double> intersection{x, A.y_ + t * (B.y_ - A.y_)};
+            intersectionPoints.push_back(intersection) ;
+        }
+    }
+     
+
+    // hole intersections
+    for (const auto& poly : holes){
+        for(int i = 0 ; i < poly.points_.size() ; i++){
+            Point<int> A = poly.points_.at(i);
+            Point<int> B = poly.points_.at((i+1)%poly.points_.size());
+            // is line x intersecting with segment AB?
+            if( (x < B.x_) != (x < A.x_) ) {
+                // whats the intersection point?
+                double t = (x - A.x_) / (B.x_ - A.x_); // since line x is infinite then its not like a point in polygon and i dont have to test wheter the intersection y is bigger than some point.y_!
+                Point<double> intersection{x, A.y_ + t * (B.y_ - A.y_)};
+                intersectionPoints.push_back(intersection) ;
+            }
+        }
+    }
+
+    std::sort(intersectionPoints.begin(),intersectionPoints.end() , [](const Point<double>& A, const Point<double>& B){
+        return A.y_ < B.y_;
+    }  );
+
+    return intersectionPoints;
+
+}
+
+void MapGeometry::showVerticalSlices(
+    const cv::Mat& original_image)
+{
+    cv::Mat display;
+
+    cv::cvtColor(
+        original_image,
+        display,
+        cv::COLOR_GRAY2BGR
+    );
+
+    // Add bottom/right edge so grid vertices remain drawable.
+    cv::copyMakeBorder(
+        display,
+        display,
+        0, 1,
+        0, 1,
+        cv::BORDER_CONSTANT,
+        cv::Scalar(0, 0, 0)
+    );
+
+    constexpr int scale = 4;
+
+    cv::resize(
+        display,
+        display,
+        cv::Size(),
+        scale,
+        scale,
+        cv::INTER_NEAREST
+    );
+
+    for (const auto& slice : vertical_slices_)
+    {
+        for (const auto& interval : slice.free_intervals_)
+        {
+            /*
+             * BCD geometry uses padded working-grid coordinates.
+             * Original image coordinates therefore require -1.
+             */
+            int x = static_cast<int>(
+                std::round((slice.x_ - 1.0) * scale)
+            );
+
+            int y1 = static_cast<int>(
+                std::round((interval.start_.y_ - 1.0) * scale)
+            );
+
+            int y2 = static_cast<int>(
+                std::round((interval.end_.y_ - 1.0) * scale)
+            );
+
+            cv::line(
+                display,
+                {x, y1},
+                {x, y2},
+                cv::Scalar(0, 0, 255),
+                2
+            );
+        }
+    }
+
+    cv::namedWindow(
+        "BCD Vertical Free Intervals",
+        cv::WINDOW_NORMAL
+    );
+
+    cv::imshow(
+        "BCD Vertical Free Intervals",
+        display
+    );
+
+    cv::waitKey(0);
 }

@@ -168,6 +168,13 @@ struct FreeSpaceRegion{
     bool reachable_ = false; //reachable_ = reachable from the robot without crossing an obstacle, according to static connected-component topology
 };
 
+
+struct VerticalSlice
+{
+    double x_;
+    std::vector<Segment<double>> free_intervals_;
+};
+
 class MapGeometry{
     public:
         MapGeometry(const OccupancyGrid& grid_map);
@@ -188,6 +195,15 @@ class MapGeometry{
 
 
         void determineReachableRegion(const Point<double>& robot_position);
+
+
+        std::vector<FreeSpaceRegion<int>>& getFreeRegions();
+        void BCD(const PolygonWithHoles<int>& polygon);
+
+        std::vector<Point<double>> getYIntersections(double x, const PolygonWithHoles<int>& polygon); //vertical sweeping line intersections with a polygon
+
+
+        void showVerticalSlices( const cv::Mat& original_image);
 
     private:
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
@@ -219,6 +235,8 @@ class MapGeometry{
         // Final regions that will be sent to BCD.
         std::vector<FreeSpaceRegion<int>> free_space_regions_;
 
+
+        std::vector<VerticalSlice> vertical_slices_;
 
 
         /*
