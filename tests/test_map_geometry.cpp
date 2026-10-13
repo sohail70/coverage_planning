@@ -1,7 +1,7 @@
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/rasterized_image.hpp"
 int main(int argc , char* argv[]){
-    RasterizedImage image_ ("../maps/map2.png",0.05 , Point<double>{0.0,0.0});
+    RasterizedImage image_ ("../maps/map6.png",0.05 , Point<double>{0.0,0.0});
     MapGeometry map_geometry_(image_) ;
     map_geometry_.findContours();
     // map_geometry_.showContours(image_.getImage());
@@ -13,10 +13,13 @@ int main(int argc , char* argv[]){
     map_geometry_.determineReachableRegion(Point<double>{152,313});
     auto free_region_ = map_geometry_.getFreeRegions().at(0);
     map_geometry_.BCD(free_region_.geometry_);
-    // BCD has now filled vertical_slices_.
-    map_geometry_.showVerticalSlices(
-        image_.getImage()
-    );
+    // // BCD has now filled vertical_slices_.
+    // map_geometry_.showVerticalSlices(
+    //     image_.getImage()
+    // );
+    // map_geometry_.showBCDCellIDs(image_.getImage());
+    map_geometry_.showBCDCells( image_.getImage());
+
 
 }
 

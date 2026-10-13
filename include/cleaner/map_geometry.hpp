@@ -161,7 +161,7 @@ struct BoundaryGeometry
 };
 
 template<typename T>
-struct FreeSpaceRegion{
+struct FreeSpaceRegion {
     PolygonWithHoles<T> geometry_;
     int outer_boundary_id_;
 
@@ -169,10 +169,35 @@ struct FreeSpaceRegion{
 };
 
 
-struct VerticalSlice
-{
-    double x_;
+struct VerticalSlice {
+    double x_;        // midpoint, useful for intersection sampling
+
+    double x_left_;   // critical_x[i]
+    double x_right_;  // critical_x[i+1]
+
+
     std::vector<Segment<double>> free_intervals_;
+
+
+    // Same index as free_intervals_ --> every interval gets a brand-new cell ID.
+    // Tells which BCD cell each interval currently belongs to.
+    // The invariant is simply: free_intervals_[i]  <->  cell_ids_[i]
+    std::vector<int> cell_ids_;
+};
+
+
+struct IntervalConnection {
+    int left_interval_; // Index on one verticalSlice.free_intervals_;
+    int right_interval_;
+};
+
+
+struct BCDCell
+{
+    int id_;
+
+    // Each polygon is one rectangular slab-piece belonging to this cell.
+    std::vector<Polygon<double>> fragments_;
 };
 
 class MapGeometry{
@@ -204,6 +229,14 @@ class MapGeometry{
 
 
         void showVerticalSlices( const cv::Mat& original_image);
+
+
+
+        
+        void showBCDCellIDs(const cv::Mat& original_image);
+        cv::Scalar colorFromCellId(int cell_id) const;
+        void showBCDCells(const cv::Mat& original_image);
+
 
     private:
         const OccupancyGrid& grid_map_; // immutable occupancy grid for reading only!
@@ -238,6 +271,8 @@ class MapGeometry{
 
         std::vector<VerticalSlice> vertical_slices_;
 
+        std::vector<BCDCell> bcd_cells_;
+
 
         /*
         converting:
@@ -261,6 +296,7 @@ class MapGeometry{
         
         */
         void buildFreeSpaceRegions();
-
+        std::vector<IntervalConnection> overlapGraph(const VerticalSlice& slice_left , const VerticalSlice& slice_right);
+        void decompose(const std::vector<std::vector<int>>& successor , const std::vector<std::vector<int>>& predecessors, VerticalSlice& slice_left, VerticalSlice& slice_right, int& next_cell_id_);
 
 };
