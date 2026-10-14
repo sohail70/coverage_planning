@@ -70,6 +70,7 @@ add_library(coverage_core
     src/map_geometry.cpp
     src/boustrophedon_decomposer.cpp
     src/depth_first_traversal.cpp
+    src/boustrophedon_coverage_generator.cpp
 )
 
 # The nice part is that because this is PUBLIC:

@@ -1472,6 +1472,9 @@ void MapGeometry::showCrackBoundaries(const cv::Mat& original_image)
     6. return Polygon<int>
 */
 
+/**
+    TODO: Later make it use simplifyPolygon from the geometry.hpp  (simplifyPolygon also deduplicate which is used in the copmute function of boustrophedon_decomposer class)
+*/
 Polygon<int> MapGeometry::makePolygonFromBoundary(const std::vector<Segment<int>>& boundary){
 
     if(boundary.empty())

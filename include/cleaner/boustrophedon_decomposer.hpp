@@ -17,7 +17,7 @@ class BoustrophedonDecomposer {
         void showVerticalSlices( const cv::Mat& original_image);
         void showBCDCellIDs(const cv::Mat& original_image);
         cv::Scalar colorFromCellId(int cell_id) const;
-        void showBCDCells(const cv::Mat& original_image);
+        void showBCDCells( const cv::Mat& original_image, bool use_unified_polygon = true);
     private:
 
         // Why private? future CoveragePlanner should never care that BCD was calculated using midpoint vertical slices. It should only receive BCDCell

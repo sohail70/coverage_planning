@@ -233,3 +233,83 @@ inline Point<double> inverseTransform(Point<double> p , double theta, Point<doub
     return Point<double>{std::cos(theta)*X.x_ + std::sin(theta)*X.y_ , -std::sin(theta)*X.x_ + std::cos(theta)*X.y_}  ;
 }
 
+
+
+
+
+template<typename T>
+Polygon<T> simplifyPolygon(const Polygon<T>& polygon)
+{
+    Polygon<T> result;
+
+    if (polygon.points_.size() < 3)
+        return polygon;
+
+
+    // -----------------------------------------
+    // Phase 0: remove consecutive duplicates
+    // -----------------------------------------
+    std::vector<Point<T>> points;
+
+    for (const auto& p : polygon.points_)
+    {
+        if (points.empty() || points.back() != p)
+        {
+            points.push_back(p);
+        }
+    }
+
+    // Our polygon representation does not need:
+    // first point == last point
+    if (points.size() > 1 &&
+        points.front() == points.back())
+    {
+        points.pop_back();
+    }
+
+
+    if (points.size() < 3)
+        return Polygon<T>{};
+
+
+    // -----------------------------------------
+    // Remove collinear intermediate points
+    // until stable
+    // -----------------------------------------
+    bool changed = true;
+
+    while (changed && points.size() >= 3)
+    {
+        changed = false;
+
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
+            std::size_t prev =
+                (i + points.size() - 1) % points.size();
+
+            std::size_t next =
+                (i + 1) % points.size();
+
+            Point<T> A = points.at(prev);
+            Point<T> B = points.at(i);
+            Point<T> C = points.at(next);
+
+            Point<T> u = B - A;
+            Point<T> v = C - B;
+
+            if (crossProduct2D(u, v) == 0 &&
+                dotProduct2D(u, v) > 0)
+            {
+                points.erase(points.begin() + i);
+
+                changed = true;
+                break;
+            }
+        }
+    }
+
+
+    result.points_ = std::move(points);
+
+    return result;
+}

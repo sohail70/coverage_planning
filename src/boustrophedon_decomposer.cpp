@@ -458,6 +458,27 @@ void BoustrophedonDecomposer::compute(const PolygonWithHoles<int>& polygon){
 
     std::cout << "\n================================\n";
 
+    // Unifying fragments into one polygon!
+
+    for (auto& cell : bcd_cells_) {
+        // Top boundary: left -> right
+        for (const auto& rect : cell.fragments_) {
+            cell.polygon_.points_.push_back(rect.points_.at(0));
+            cell.polygon_.points_.push_back(rect.points_.at(1));
+        }
+        // Bottom boundary: right -> left
+        for (auto iter = cell.fragments_.rbegin() ; iter != cell.fragments_.rend() ; ++iter ) {
+            cell.polygon_.points_.push_back(iter->points_.at(2));
+            cell.polygon_.points_.push_back(iter->points_.at(3));
+        }
+
+        cell.polygon_ = simplifyPolygon(cell.polygon_);
+    }
+
+
+
+
+
 
 
     // Creating the graph cells!
@@ -932,33 +953,36 @@ void BoustrophedonDecomposer::showBCDCellIDs(const cv::Mat& original_image)
     cv::waitKey(0);
 }
 
-
-void BoustrophedonDecomposer::showBCDCells(const cv::Mat& original_image)
-{
+void BoustrophedonDecomposer::showBCDCells( const cv::Mat& original_image, bool use_unified_polygon) {
     if (bcd_cells_.empty())
     {
-        std::cout << "No BCD cells available. Run BCD() first.\n";
+        std::cout
+            << "No BCD cells available. Run compute() first.\n";
         return;
     }
+
 
     cv::Mat display;
 
     if (original_image.channels() == 1)
-        cv::cvtColor(original_image, display, cv::COLOR_GRAY2BGR);
+    {
+        cv::cvtColor(
+            original_image,
+            display,
+            cv::COLOR_GRAY2BGR
+        );
+    }
     else
+    {
         display = original_image.clone();
+    }
 
 
-    // Overlay used so we can blend the BCD colors with the original map.
     cv::Mat overlay = display.clone();
 
 
     for (const auto& cell : bcd_cells_)
     {
-        /*
-         * Deterministic color:
-         * same cell_id -> same color every time.
-         */
         cv::Scalar color(
             50 + (cell.id_ * 53)  % 206,
             50 + (cell.id_ * 97)  % 206,
@@ -966,16 +990,15 @@ void BoustrophedonDecomposer::showBCDCells(const cv::Mat& original_image)
         );
 
 
-        for (const auto& fragment : cell.fragments_)
+        // =========================================================
+        // Unified representation
+        // =========================================================
+        if (use_unified_polygon)
         {
             std::vector<cv::Point> cv_polygon;
 
-            for (const auto& p : fragment.points_)
+            for (const auto& p : cell.polygon_.points_)
             {
-                /*
-                 * Geometry is still in padded working-grid coordinates.
-                 * Original image coordinates are shifted by (-1,-1).
-                 */
                 cv_polygon.push_back(
                     cv::Point{
                         cvRound(p.x_ - 1.0),
@@ -984,10 +1007,12 @@ void BoustrophedonDecomposer::showBCDCells(const cv::Mat& original_image)
                 );
             }
 
+
             if (cv_polygon.size() >= 3)
             {
-                std::vector<std::vector<cv::Point>> polygons;
-                polygons.push_back(cv_polygon);
+                std::vector<std::vector<cv::Point>> polygons{
+                    cv_polygon
+                };
 
                 cv::fillPoly(
                     overlay,
@@ -995,25 +1020,58 @@ void BoustrophedonDecomposer::showBCDCells(const cv::Mat& original_image)
                     color
                 );
 
-                // // Draw fragment boundary too.
-                // cv::polylines(
-                //     overlay,
-                //     polygons,
-                //     true,
-                //     cv::Scalar(0, 0, 0),
-                //     1,
-                //     cv::LINE_AA
-                // );
+
+                // Useful while validating the unified polygon
+                cv::polylines(
+                    overlay,
+                    polygons,
+                    true,
+                    cv::Scalar(0, 0, 0),
+                    1,
+                    cv::LINE_AA
+                );
+            }
+        }
+
+
+        // =========================================================
+        // Fragment representation
+        // =========================================================
+        else
+        {
+            for (const auto& fragment : cell.fragments_)
+            {
+                std::vector<cv::Point> cv_polygon;
+
+                for (const auto& p : fragment.points_)
+                {
+                    cv_polygon.push_back(
+                        cv::Point{
+                            cvRound(p.x_ - 1.0),
+                            cvRound(p.y_ - 1.0)
+                        }
+                    );
+                }
+
+
+                if (cv_polygon.size() >= 3)
+                {
+                    std::vector<std::vector<cv::Point>> polygons{
+                        cv_polygon
+                    };
+
+                    cv::fillPoly(
+                        overlay,
+                        polygons,
+                        color
+                    );
+                }
             }
         }
     }
 
 
-    /*
-     * Blend:
-     * 0.55 original image
-     * 0.45 BCD coloring
-     */
+    // Blend colored cells with original image
     cv::addWeighted(
         overlay,
         0.45,
@@ -1024,36 +1082,53 @@ void BoustrophedonDecomposer::showBCDCells(const cv::Mat& original_image)
     );
 
 
-    // ---------------------------------------------------------
-    // Add one CELL ID label roughly at the center of each cell.
-    // ---------------------------------------------------------
+    // =============================================================
+    // Labels
+    // =============================================================
     for (const auto& cell : bcd_cells_)
     {
-        if (cell.fragments_.empty())
-            continue;
-
         double sum_x = 0.0;
         double sum_y = 0.0;
         int count = 0;
 
-        for (const auto& fragment : cell.fragments_)
+
+        if (use_unified_polygon)
         {
-            for (const auto& p : fragment.points_)
+            for (const auto& p : cell.polygon_.points_)
             {
                 sum_x += p.x_;
                 sum_y += p.y_;
                 count++;
             }
         }
+        else
+        {
+            for (const auto& fragment : cell.fragments_)
+            {
+                for (const auto& p : fragment.points_)
+                {
+                    sum_x += p.x_;
+                    sum_y += p.y_;
+                    count++;
+                }
+            }
+        }
+
 
         if (count == 0)
             continue;
 
-        int text_x = cvRound(sum_x / count - 1.0);
-        int text_y = cvRound(sum_y / count - 1.0);
+
+        int text_x =
+            cvRound(sum_x / count - 1.0);
+
+        int text_y =
+            cvRound(sum_y / count - 1.0);
+
 
         std::string label =
             "C" + std::to_string(cell.id_);
+
 
         cv::putText(
             display,
@@ -1079,10 +1154,15 @@ void BoustrophedonDecomposer::showBCDCells(const cv::Mat& original_image)
     }
 
 
-    cv::imshow("BCD Cells", display);
+    std::string window_name =
+        use_unified_polygon
+            ? "BCD Cells - Unified"
+            : "BCD Cells - Fragments";
+
+
+    cv::imshow(window_name, display);
     cv::waitKey(0);
 }
-
 
 const CellGraph& BoustrophedonDecomposer::getGraph() const {
     return graph_;
