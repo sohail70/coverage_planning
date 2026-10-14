@@ -198,6 +198,10 @@ struct BCDCell
 
     // Each polygon is one rectangular slab-piece belonging to this cell.
     std::vector<Polygon<double>> fragments_;
+
+
+    std::vector<int> neighbor_ids_;
+
 };
 
 class MapGeometry{
@@ -273,6 +277,7 @@ class MapGeometry{
 
         std::vector<BCDCell> bcd_cells_;
 
+        std::vector<std::pair<int,int>> adjacency_edges_; // int,int are cell_id_ we gave to slice intervals in the vertical slice struct 
 
         /*
         converting:

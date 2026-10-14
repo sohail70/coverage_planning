@@ -1992,6 +1992,11 @@ std::vector<FreeSpaceRegion<int>>& MapGeometry::getFreeRegions(){
 }
 
 void MapGeometry::BCD(const PolygonWithHoles<int>& polygon){
+    vertical_slices_.clear();
+    bcd_cells_.clear();
+    adjacency_edges_.clear();
+
+
     // 2. Collect x coordinates of outer + hole vertices.
     std::vector<int> critical_x;
     for(const auto& p   : polygon.outer_.points_) {
@@ -2028,7 +2033,6 @@ void MapGeometry::BCD(const PolygonWithHoles<int>& polygon){
 
 
 
-    vertical_slices_.clear();
     // using the mid points of consecutive x's to avoid degenerate cases of vertical x being on a vertical side of a rectangle for example
     for (int i = 0 ; i + 1 < critical_x.size() ; i++){
         VerticalSlice vertical_slice_;
@@ -2411,7 +2415,7 @@ void MapGeometry::BCD(const PolygonWithHoles<int>& polygon){
                 
                 */
                 iter->fragments_.push_back(poly_);
-                iter->id_ = cell_id_;
+                iter->id_ = cell_id_; // Redundant! because we already found it via std find using id_ == cell_id_
             }
         }
     }
@@ -2445,6 +2449,62 @@ void MapGeometry::BCD(const PolygonWithHoles<int>& polygon){
     std::cout << "\n================================\n";
 
 
+    /*
+        converting adjacency_edges_ into each BCDCell::neighbor_ids_.
+
+        why doing both sides?
+        Because adjacency_edges_ stores each adjacency only once, for example:
+        {4, 7}
+
+        This means:
+        CELL 4 is neighbor of CELL 7
+        and
+        CELL 7 is neighbor of CELL 4
+
+        The graph is undirected.
+        So when processing CELL 4:
+        cell_.id_ == edge_.first
+
+        is true, therefore add 7.
+        But later when processing CELL 7, this is false:
+        cell_.id_ == edge_.first
+
+        because:
+        edge_.first  = 4
+        edge_.second = 7
+
+        You therefore need:
+        else if (cell_.id_ == edge_.second)
+        {
+            cell_.neighbor_ids_.push_back(edge_.first);
+        }
+
+        Otherwise Cell 7 would not know that Cell 4 is its neighbor.
+    */
+
+    for (auto& cell_ : bcd_cells_){
+        cell_.neighbor_ids_.clear();
+        for (const auto& edge_ : adjacency_edges_) {
+            if (cell_.id_ == edge_.first){
+                cell_.neighbor_ids_.push_back(edge_.second);
+            }
+            else if (cell_.id_ == edge_.second){
+                cell_.neighbor_ids_.push_back(edge_.first);
+            }
+        }
+
+    }
+    //LOG:
+    for (const auto& cell : bcd_cells_) {
+        std::cout << "CELL " << cell.id_ << " neighbors: ";
+
+        for (int neighbor_id : cell.neighbor_ids_)
+        {
+            std::cout << neighbor_id << " ";
+        }
+
+        std::cout << "\n";
+    }
 
 
 }
@@ -2651,6 +2711,40 @@ void MapGeometry::decompose(const std::vector<std::vector<int>>& successor , con
                 SPLIT
     
     */
+    /*
+        About the adjacency graph:
+        You only add graph edges at SPLIT and MERGE:
+        CONTINUE
+        Cell 4 -> Cell 4
+
+        No graph edge.
+        It is literally the same cell.
+
+        At a split:
+                    Cell 6
+                    /
+        Cell 4 ----
+                    \
+                    Cell 7
+
+        record:
+        4 -- 6
+        4 -- 7
+
+        At a merge:
+        Cell 6 ----\
+                    >---- Cell 8
+        Cell 7 ----/
+
+        record:
+        6 -- 8
+        7 -- 8
+
+        START and END do not create adjacency by themselves.
+    
+    */
+    slice_right.cell_ids_.clear();
+
     for (int i = 0 ; i < predecessors.size() ; i++) {
         const auto& current_preds = predecessors.at(i);
         if(current_preds.size() == 0) {
@@ -2680,6 +2774,47 @@ void MapGeometry::decompose(const std::vector<std::vector<int>>& successor , con
 
     }
 
+
+
+    /*
+        PHASE 2:
+        Find adjacency between BCD cells.
+
+        After Phase 1, every interval on both slices already has a cell ID.
+        just compare their cell IDs.
+        If:
+        left cell ID == right cell ID
+
+        then it is the same BCD cell continuing:
+        CELL 4 -------- CELL 4
+        No adjacency edge.
+        If:
+        left cell ID != right cell ID
+        then two different BCD cells touch at this sweep boundary:
+        CELL 4 -------- CELL 5
+        Therefore:
+        4 and 5 are neighbors
+    */
+
+
+    for(int L = 0 ; L < successor.size() ; L++) {
+
+        auto left_cell_id_ = slice_left.cell_ids_.at(L);
+
+        for (int R : successor.at(L) ){
+            auto right_cell_id_ = slice_right.cell_ids_.at(R);
+            
+            if (left_cell_id_ == right_cell_id_) {
+                continue;
+            }
+
+            auto iter = std::find(adjacency_edges_.begin(), adjacency_edges_.end(), std::pair<int,int>{left_cell_id_, right_cell_id_});
+            if(iter == adjacency_edges_.end()){
+                adjacency_edges_.push_back({left_cell_id_, right_cell_id_});
+            }
+
+        }
+    }
 
 
 
