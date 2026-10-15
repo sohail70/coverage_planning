@@ -151,13 +151,15 @@ enum class PointState {
     BOUNDARY,
 };
 
-inline PointState pointInPolygon(const Point<double> P, const Polygon<int>& polygon) {
+template <typename T>
+inline PointState pointInPolygon(const Point<double> P, const Polygon<T>& polygon) {
     std::vector<Point<double>> intersections;
     int count = 0;
     for (int i = 0 ; i <polygon.points_.size() ; i++)
     {
-        Point<int>  A = polygon.points_.at(i);
-        Point<int>  B = polygon.points_.at((i+1)%polygon.points_.size());
+        // Convert polygon coordinates to continuous geometry.
+        Point<double> A{ static_cast<double>(polygon.points_.at(i).x_), static_cast<double>(polygon.points_.at(i).y_) };
+        Point<double> B{ static_cast<double>( polygon.points_.at((i + 1) % polygon.points_.size()).x_), static_cast<double>( polygon.points_.at((i + 1) % polygon.points_.size()).y_) };
 
         if (orientationTest(A, B, P) == Orientation::COLLINEAR){
             // Bounding box
@@ -315,7 +317,7 @@ Polygon<T> simplifyPolygon(const Polygon<T>& polygon)
 
 
 // make a vector into unit vector
-void normalize(Point<double>& dir) {
+inline void normalize(Point<double>& dir) {
     if(dir.x_==0 && dir.y_==0) {
         throw std::runtime_error("Normalize: zero dir!");
     }
@@ -371,7 +373,7 @@ Orientation polygonOrientation(const Polygon<T>& polygon) {
 }
 
 
-std::pair<double,double> getProjectionRange(const Polygon<double>& polygon, Point<double> direction) {
+inline std::pair<double,double> getProjectionRange(const Polygon<double>& polygon, Point<double> direction) {
     if (polygon.points_.empty())
         throw std::runtime_error("getProjectionRange: Empty polygon");
 
@@ -432,7 +434,7 @@ std::pair<double,double> getProjectionRange(const Polygon<double>& polygon, Poin
  *
  * This function returns one inward unit normal for each polygon edge.
  */
-std::vector<Point<double>> inwardUnitNormalsForPolygon(const Polygon<double>& polygon) {
+inline std::vector<Point<double>> inwardUnitNormalsForPolygon(const Polygon<double>& polygon) {
     Orientation orientation_ = polygonOrientation(polygon);
     std::vector<Point<double>> unit_normals_;
     for(int i = 0; i < polygon.points_.size() ; i++) {
@@ -488,8 +490,16 @@ enum class Offset {
     We only need their intersection; t and u do not need to be in [0,1].
     This avoids treating the offset operation as a finite-segment intersection.
     TO UNDERSTAND IT YOU CAN PICTURE A SIMPLE CONCAVE POLYGON
+    =======================================================================
+
+    There are 3separate issues:
+    1. region survives as one polygon
+    2. region splits into multiple polygons
+    3. region disappears completely --> (narrow polygons disappear after a scale!
+
+    Following function only naturally represents case 1.
 */
-Polygon<double> offsetEdgesForPolygon(const Polygon<double>& polygon, double rad, Offset offset) {
+inline Polygon<double> offsetEdgesForPolygon(const Polygon<double>& polygon, double rad, Offset offset) {
     if (rad <= 0) {
         throw std::runtime_error("Offset distance is invalid");
     }
@@ -549,4 +559,61 @@ Polygon<double> offsetEdgesForPolygon(const Polygon<double>& polygon, double rad
     }
 
     return scaled_poly_;
+}
+
+
+
+inline PolygonWithHoles<double> applyClearance(const PolygonWithHoles<double>& region, double radius) {
+    PolygonWithHoles<double> safe_region_;
+    safe_region_.outer_ = offsetEdgesForPolygon(region.outer_, radius, Offset::INWARD);
+    for (const auto& hole : region.holes_){
+        safe_region_.holes_.push_back(offsetEdgesForPolygon(hole, radius, Offset::OUTWARD));
+    }
+    return safe_region_;
+}
+
+
+/*
+    discrete raster geometry
+            |
+            | ONE conversion
+            v
+    continuous planning geometry
+
+
+    SO:
+        OccupancyGrid
+            ↓
+        MapGeometry
+            ↓
+        PolygonWithHoles<int>
+            grid vertices are exact integers
+
+            ↓ toDoubleGeometry()       ← ONE-WAY BOUNDARY
+
+        PolygonWithHoles<double>
+            still measured in grid cells
+
+            ↓ clearance
+            ↓ BCD
+            ↓ arbitrary-angle lanes
+            ↓ trajectory
+
+*/
+inline Polygon<double> toDoublePolygon(const Polygon<int>& polygon) {
+    Polygon<double>  result;
+    result.points_.reserve(polygon.points_.size());
+    for(const auto& p : polygon.points_) {
+        result.points_.push_back({static_cast<double>(p.x_), static_cast<double>(p.y_)});
+    }
+    return result;
+}
+
+inline PolygonWithHoles<double> toDoubleGeometry(const PolygonWithHoles<int>& region) {
+    PolygonWithHoles<double> result;
+    result.outer_ = toDoublePolygon(region.outer_);
+    for(const auto& hole : region.holes_) {
+        result.holes_.push_back(toDoublePolygon(hole));
+    }
+    return  result;
 }

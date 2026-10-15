@@ -1,3 +1,4 @@
+#include "cleaner/geometry.hpp"
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/rasterized_image.hpp"
 #include "cleaner/boustrophedon_decomposer.hpp"
@@ -16,11 +17,11 @@ int main(int argc , char* argv[]){
     map_geometry_.showSimplifiedBoundaries(image_.getImage());
     map_geometry_.determineReachableRegion(Point<double>{152,313});
     auto free_region_ = map_geometry_.getFreeRegions().at(0);
-
+    auto safe_region_ = applyClearance(toDoubleGeometry(free_region_.geometry_), 10.5);
 
     /////////////////////////////////BCD//////////////////////////////////
     BoustrophedonDecomposer decomposer_;
-    decomposer_.compute(free_region_.geometry_);
+    decomposer_.compute(safe_region_);
     // BCD has now filled vertical_slices_.
     decomposer_.showVerticalSlices(image_.getImage());
     decomposer_.showBCDCellIDs(image_.getImage());
