@@ -5,10 +5,34 @@
 #include "cleaner/bcd_type.hpp"
 #include "cleaner/cell_graph.hpp"
 
+/*
+    Note about Units and Types:
+
+    Raster / MapGeometry
+        Polygon<int>
+        units = grid cells
+        exact lattice geometry
+            |
+            | convert int -> double ONCE
+            v
+    Continuous planning geometry
+        Polygon<double>
+        units = STILL grid cells
+            |
+            | apply robot clearance
+            v
+    Safe PolygonWithHoles<double>
+            |
+            v
+    BCD
+        all geometric quantities = double
+        IDs / indices = int
+
+*/
 class BoustrophedonDecomposer {
     public:
 
-        void compute(const PolygonWithHoles<int>& polygon); // in the end it fills the bcd_cells_
+        void compute(const PolygonWithHoles<double>& polygon); // in the end it fills the bcd_cells_
 
         const CellGraph& getGraph() const;
         const std::vector<BCDCell>& getCells() const;
@@ -58,6 +82,6 @@ class BoustrophedonDecomposer {
 
         std::vector<BoustrophedonDecomposer::IntervalConnection> overlapGraph(const BoustrophedonDecomposer::VerticalSlice& slice_left , const BoustrophedonDecomposer::VerticalSlice& slice_right);
         void propagateCellIDs(const std::vector<std::vector<int>>& successor , const std::vector<std::vector<int>>& predecessors, BoustrophedonDecomposer::VerticalSlice& slice_left, BoustrophedonDecomposer::VerticalSlice& slice_right, int& next_cell_id_);
-        std::vector<Point<double>> getYIntersections(double x, const PolygonWithHoles<int>& polygon); //vertical sweeping line intersections with a polygon
+        std::vector<Point<double>> getYIntersections(double x, const PolygonWithHoles<double>& polygon); //vertical sweeping line intersections with a polygon
 
 };

@@ -1,7 +1,7 @@
 #include "cleaner/boustrophedon_decomposer.hpp"
 
 
-void BoustrophedonDecomposer::compute(const PolygonWithHoles<int>& polygon){
+void BoustrophedonDecomposer::compute(const PolygonWithHoles<double>& polygon){
     vertical_slices_.clear();
     bcd_cells_.clear();
     graph_.clear();
@@ -525,15 +525,15 @@ void BoustrophedonDecomposer::compute(const PolygonWithHoles<int>& polygon){
 }
 
 
-std::vector<Point<double>> BoustrophedonDecomposer::getYIntersections(double x, const PolygonWithHoles<int>& polygon) {
+std::vector<Point<double>> BoustrophedonDecomposer::getYIntersections(double x, const PolygonWithHoles<double>& polygon) {
     auto outer = polygon.outer_;
     auto holes = polygon.holes_;
     std::vector<Point<double>> intersectionPoints;
 
     // Outer intersections
     for(int i = 0 ; i < outer.points_.size() ; i++){
-        Point<int> A = outer.points_.at(i);
-        Point<int> B = outer.points_.at((i+1)%outer.points_.size());
+        Point<double> A = outer.points_.at(i);
+        Point<double> B = outer.points_.at((i+1)%outer.points_.size());
         // is line x intersecting with segment AB?
         if( (x < B.x_) != (x < A.x_) ) {
             // whats the intersection point?
@@ -547,8 +547,8 @@ std::vector<Point<double>> BoustrophedonDecomposer::getYIntersections(double x, 
     // hole intersections
     for (const auto& poly : holes){
         for(int i = 0 ; i < poly.points_.size() ; i++){
-            Point<int> A = poly.points_.at(i);
-            Point<int> B = poly.points_.at((i+1)%poly.points_.size());
+            Point<double> A = poly.points_.at(i);
+            Point<double> B = poly.points_.at((i+1)%poly.points_.size());
             // is line x intersecting with segment AB?
             if( (x < B.x_) != (x < A.x_) ) {
                 // whats the intersection point?
