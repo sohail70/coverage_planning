@@ -459,6 +459,19 @@ void BoustrophedonDecomposer::compute(const PolygonWithHoles<int>& polygon){
     std::cout << "\n================================\n";
 
     // Unifying fragments into one polygon!
+    /*
+        since its somehow ordered then its easy!
+
+        each rectangle (one fragment) is created as:
+        0 = top-left
+        1 = top-right
+        2 = bottom-right
+        3 = bottom-left
+
+        So for fragments ordered left-to-right, build:
+        top boundary:    left -> right
+        bottom boundary: right -> left
+    */
 
     for (auto& cell : bcd_cells_) {
         // Top boundary: left -> right
@@ -472,7 +485,7 @@ void BoustrophedonDecomposer::compute(const PolygonWithHoles<int>& polygon){
             cell.polygon_.points_.push_back(iter->points_.at(3));
         }
 
-        cell.polygon_ = simplifyPolygon(cell.polygon_);
+        cell.polygon_ = simplifyPolygon(cell.polygon_); // To remove duplicates and collinear points which are redundant to represent a clean polygon
     }
 
 

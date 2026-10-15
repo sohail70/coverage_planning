@@ -5,6 +5,7 @@
 #include <fstream>
 #include <math.h>
 #include <ostream>
+#include <stdexcept>
 #include <vector>
 
 
@@ -246,9 +247,7 @@ Polygon<T> simplifyPolygon(const Polygon<T>& polygon)
         return polygon;
 
 
-    // -----------------------------------------
     // Phase 0: remove consecutive duplicates
-    // -----------------------------------------
     std::vector<Point<T>> points;
 
     for (const auto& p : polygon.points_)
@@ -272,10 +271,8 @@ Polygon<T> simplifyPolygon(const Polygon<T>& polygon)
         return Polygon<T>{};
 
 
-    // -----------------------------------------
     // Remove collinear intermediate points
     // until stable
-    // -----------------------------------------
     bool changed = true;
 
     while (changed && points.size() >= 3)
@@ -312,4 +309,244 @@ Polygon<T> simplifyPolygon(const Polygon<T>& polygon)
     result.points_ = std::move(points);
 
     return result;
+}
+
+
+
+
+// make a vector into unit vector
+void normalize(Point<double>& dir) {
+    if(dir.x_==0 && dir.y_==0) {
+        throw std::runtime_error("Normalize: zero dir!");
+    }
+    auto den = std::sqrt(dir.x_*dir.x_ + dir.y_*dir.y_);
+    dir.x_ = dir.x_/den;
+    dir.y_ = dir.y_/den;
+}
+
+/**
+ * Orientation convention:
+ *
+ * We use the mathematical orientation determined directly from
+ * the coordinate values and cross-product sign:
+ *
+ *      signed area > 0  -> CCW
+ *      signed area < 0  -> CW
+ *
+ * Our current grid/image coordinates have:
+ *
+ *      +x -> right
+ *      +y -> down
+ *
+ * Therefore a mathematically CCW polygon appears visually clockwise
+ * when displayed as an image, and vice versa.
+ *
+ * Throughout the geometry code, Orientation::CW / CCW refer to the
+ * mathematical/raw-coordinate convention, NOT the visual image orientation.
+ */
+template <typename T>
+double signedPolygonArea(const Polygon<T>& polygon) {
+    double areaTimesTwo = 0;
+    for (int i = 0 ; i < polygon.points_.size(); i++) {
+        auto p1 = polygon.points_.at(i);
+        auto p2 = polygon.points_.at((i+1)%polygon.points_.size());
+        auto cross = crossProduct2D(p1, p2);
+        areaTimesTwo += cross;
+    }
+    return areaTimesTwo/2;
+}
+
+template <typename T>
+Orientation polygonOrientation(const Polygon<T>& polygon) {
+    if(polygon.points_.size() < 3){
+        throw std::runtime_error("polygonOrientation: Polygon has less than 3 points\n");
+    }
+    auto signedArea = signedPolygonArea(polygon);
+    if (signedArea > 0) 
+        return Orientation::CCW;
+    else if (signedArea < 0)
+        return Orientation::CW;
+
+    return Orientation::COLLINEAR; // degenerate case
+}
+
+
+std::pair<double,double> getProjectionRange(const Polygon<double>& polygon, Point<double> direction) {
+    if (polygon.points_.empty())
+        throw std::runtime_error("getProjectionRange: Empty polygon");
+
+    normalize(direction);
+    double first_projection = dotProduct2D(polygon.points_.at(0), direction);
+    double min_ = first_projection;
+    double max_ = first_projection;
+
+    for (std::size_t i = 1; i < polygon.points_.size(); ++i) {
+        double current_projection = dotProduct2D(polygon.points_.at(i), direction);
+        if (current_projection > max_)
+            max_ = current_projection;
+
+        if (current_projection < min_)
+            min_ = current_projection;
+    }
+    return {min_,max_};
+}
+
+
+/*
+    linePolygonIntersections
+    segmentIntersection
+    simplifyPolygon
+    offsetPolygon   
+
+*/
+
+
+
+/**
+ * The polygon consists of directed edges, so first determine its orientation.
+ *
+ * Our stored coordinate system is:
+ *     +x right
+ *     +y down
+ *
+ * However, for Orientation::CCW / CW we keep the usual algebraic naming
+ * convention associated with the signed-area / cross-product sign:
+ *
+ *     signed area > 0 -> CCW
+ *     signed area < 0 -> CW
+ *
+ * Because the stored coordinates have +y down, these orientation names may
+ * appear visually reversed when the polygon is displayed as an image.
+ *
+ * Therefore:
+ *
+ *     polygonOrientation() == CCW
+ *         -> interior is on the algebraic "left" of each directed edge
+ *         -> inward normal = z × v = (-dy, dx)
+ *
+ *     polygonOrientation() == CW
+ *         -> interior is on the algebraic "right" of each directed edge
+ *         -> inward normal = v × z = (dy, -dx)
+ *
+ * Here "left" and "right" are algebraic, not necessarily visual image left/right.
+ *
+ * This function returns one inward unit normal for each polygon edge.
+ */
+std::vector<Point<double>> inwardUnitNormalsForPolygon(const Polygon<double>& polygon) {
+    Orientation orientation_ = polygonOrientation(polygon);
+    std::vector<Point<double>> unit_normals_;
+    for(int i = 0; i < polygon.points_.size() ; i++) {
+        Point<double> A = polygon.points_.at(i);
+        Point<double> B = polygon.points_.at((i+1)%polygon.points_.size());
+        Point<double> dir = B - A;
+
+        if (orientation_ == Orientation::CCW) {
+            Point<double> normal{-dir.y_, dir.x_};
+            normalize(normal);
+            unit_normals_.push_back(normal);
+        }
+        else if (orientation_ == Orientation::CW) {
+            Point<double> normal{dir.y_, -dir.x_};
+            normalize(normal);
+            unit_normals_.push_back(normal);
+        }
+        else {
+            throw std::runtime_error("Degenerate case");
+        }
+    }
+
+    return unit_normals_;
+
+}
+
+
+
+enum class Offset {
+    OUTWARD,
+    INWARD,
+};
+
+// shift the edges by r distance
+/*
+
+    For each edge A -> B:
+    1. Shift A and B inward by rad along the edge's inward unit normal.
+         A' = A + rad * n
+         B' = B + rad * n
+
+        For INWARD, use the inward unit normal.
+        For OUTWARD, reverse the inward unit normal.
+
+    2. The shifted points define an offset line.
+    3. Intersect each pair of neighboring offset lines.
+    4. Their intersection becomes the new vertex of the safe polygon.
+       Line intersection:
+         t = cross(C-A, s) / cross(r, s)
+         P = A + t*r
+
+    Treat offset edges as infinite lines when constructing the new vertices.
+    We only need their intersection; t and u do not need to be in [0,1].
+    This avoids treating the offset operation as a finite-segment intersection.
+    TO UNDERSTAND IT YOU CAN PICTURE A SIMPLE CONCAVE POLYGON
+*/
+Polygon<double> offsetEdgesForPolygon(const Polygon<double>& polygon, double rad, Offset offset) {
+    if (rad <= 0) {
+        throw std::runtime_error("Offset distance is invalid");
+    }
+    Polygon<double> scaled_poly_;
+
+    std::vector<Point<double>> unit_normals_ = inwardUnitNormalsForPolygon(polygon);
+
+    std::vector<Segment<double>> segs_;
+    for (int i = 0 ; i < polygon.points_.size() ; i++) {
+        auto unit_normal_ = unit_normals_.at(i);
+        if (offset == Offset::OUTWARD)
+            unit_normal_ = unit_normal_ * -1;
+
+        Point<double> A = polygon.points_.at(i);
+        Point<double> B = polygon.points_.at((i+1)%polygon.points_.size());
+        Point<double> A_prime = A + unit_normal_ * rad;
+        Point<double> B_prime = B + unit_normal_ * rad;
+        segs_.push_back({A_prime, B_prime});
+    }
+
+    // Now find the intersections between consecutive segs_ 
+    // but assume they are line not segments because the segments 
+    // are now shifted and we might have to extend them to find intersections. 
+    // TO UNDERSTAND IT YOU CAN PICTURE A SIMPLE CONCAVE POLYGON
+    for (int i = 0 ; i < segs_.size() ; i++) {
+        std::size_t previous = (i + segs_.size() - 1) % segs_.size();
+
+        Segment<double> AB = segs_.at(previous);
+        Segment<double> CD = segs_.at(i);
+        Point<double> A = AB.start_;
+        Point<double> B = AB.end_;
+        Point<double> C = CD.start_;
+        Point<double> D = CD.end_;
+        /*
+            X = A + t*(B-A)
+            Y = C + u*(D-C)
+
+            X = Y is intersection --> A + t(B-A) = C + u(D-C) --> cross the both side with r and then s to find the t and u
+            and since this is a line (infinte segment) then t and u is not necesserily between [0,1]
+        */
+        Point<double> r = B - A;
+        Point<double> q = C - A;
+        Point<double> s = D - C;
+        
+        auto den = crossProduct2D(r, s);
+        if (std::abs(den) < 1e-12) {
+            throw std::runtime_error(
+                "offsetEdgesForPolygon: neighboring offset lines are parallel"
+            );
+        }
+
+        double t = crossProduct2D(q, s) / den;
+        double u = crossProduct2D(q, r) / den;
+
+        auto intersection_point_ = A + r*t;
+        scaled_poly_.points_.push_back(intersection_point_);
+    }
+
+    return scaled_poly_;
 }
