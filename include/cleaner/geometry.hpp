@@ -655,8 +655,7 @@ inline Point<double> normalRight(const Point<double>& direction) {
 
     I remember I used some other represenation somewhere in the codebase (maybe in test_computational_geometry.cpp) that used an if check before finding the intersection but here we check if t is betweeen 0 and 1 and its enough
 */
-inline std::vector<Point<double>> linePolygonIntersections( const Polygon<double>& polygon, const Point<double>& unit_normal, double c)
-{
+inline std::vector<Point<double>> linePolygonIntersections( const Polygon<double>& polygon, const Point<double>& unit_normal, double c) {
     std::vector<Point<double>> intersections_;
 
     const double eps = 1e-10;
@@ -719,4 +718,230 @@ inline std::vector<Point<double>> linePolygonIntersections( const Polygon<double
     }
 
     return intersections_;
+}
+
+/**
+ * clipLineToPolygonIntersections()
+ *
+ * Goal:
+ *     Take one infinite line and clip it against a possibly concave polygon.
+ *     The result may contain zero, one, or multiple inside line segments.
+ *
+ *
+ * 1. Get raw boundary intersections
+ * ---------------------------------
+ *     Call linePolygonIntersections().
+ *
+ *     The returned points are all detected contacts between the infinite
+ *     line and polygon edges.
+ *
+ *     These raw contacts may include:
+ *         - proper crossings of the polygon boundary
+ *         - duplicate points when the line passes through a polygon vertex
+ *         - tangent contacts where the line only touches the polygon
+ *         - endpoints of a polygon edge that lies exactly on the line
+ *
+ *     Therefore, raw intersection points must NOT immediately be assumed
+ *     to represent alternating inside/outside crossings.
+ *
+ *
+ * 2. Sort intersections along the lane direction
+ * -----------------------------------------------
+ *     First obtain the lane direction from the line normal.
+ *
+ *     For every intersection point P, calculate:
+ *
+ *         projection = P . lane_direction
+ *
+ *     Sort using this value so that the points are ordered along
+ *     the infinite line:
+ *
+ *         P0 ---- P1 ---- P2 ---- P3 ---- ...
+ *
+ *     Sorting by x or y alone is not sufficient because the lane may
+ *     have an arbitrary angle.
+ *
+ *
+ * 3. Clean duplicate intersections
+ * --------------------------------
+ *     After sorting, remove consecutive points that are approximately
+ *     equal using an epsilon.
+ *
+ *     Duplicate points commonly occur when:
+ *         - two polygon edges share a vertex lying on the line
+ *         - a coincident polygon edge contributes its endpoints
+ *         - floating-point calculations produce nearly identical points
+ *
+ *     Do NOT use exact floating-point equality.
+ *
+ *
+ * 4. Handle trivial cases
+ * -----------------------
+ *
+ *     0 intersections:
+ *         the line does not intersect the polygon
+ *         -> return no segments
+ *
+ *     1 intersection:
+ *         usually a tangent / touching case
+ *         -> there is no interval to classify
+ *         -> return no inside segment
+ *
+ *     2 or more intersections:
+ *         inspect every interval between consecutive intersection points.
+ *
+ *     More than two intersections is completely valid for a concave polygon.
+ *
+ *
+ * 5. Classify every interval using its midpoint
+ * ---------------------------------------------
+ *     Do NOT blindly pair:
+ *
+ *         P0-P1, P2-P3, ...
+ *
+ *     because raw boundary contacts are not guaranteed to be proper
+ *     inside/outside crossings.
+ *
+ *     Instead, for every consecutive pair:
+ *
+ *         Pi ---------------- Pi+1
+ *
+ *     calculate the midpoint:
+ *
+ *         M = (Pi + Pi+1) / 2
+ *
+ *     and classify M using pointInPolygon().
+ *
+ *
+ *     If M is INSIDE:
+ *
+ *         the interval Pi -> Pi+1 lies inside the polygon
+ *         -> keep Segment(Pi, Pi+1)
+ *
+ *
+ *     If M is OUTSIDE:
+ *
+ *         the interval lies outside the polygon
+ *         -> discard it
+ *
+ *
+ *     If M is BOUNDARY:
+ *
+ *         this indicates a degenerate case, most commonly:
+ *             - the line lies along a polygon edge
+ *             - part of the interval is coincident with the polygon boundary
+ *
+ *         Handle this explicitly according to the desired coverage policy.
+ *         Do not automatically treat it as an interior coverage segment.
+ *
+ *
+ * 6. Return all inside intervals
+ * ------------------------------
+ *     A concave polygon may produce several separate inside portions
+ *     along the same infinite line.
+ *
+ *     Example:
+ *
+ *              +---------+
+ *              |         |
+ *      +-------+         +-------+
+ *      |                         |
+ *  ----P0-----P1---------P2-----P3-----> lane direction
+ *      |                         |
+ *      +-------+         +-------+
+ *              |         |
+ *              +---------+
+ *
+ *     After midpoint classification:
+ *
+ *         midpoint(P0,P1) -> INSIDE
+ *         midpoint(P1,P2) -> OUTSIDE
+ *         midpoint(P2,P3) -> INSIDE
+ *
+ *     Therefore return:
+ *
+ *         Segment(P0, P1)
+ *         Segment(P2, P3)
+ *
+ *
+ * Important:
+ * ----------
+ *     The usual inside/outside alternating rule is valid only for proper
+ *     boundary crossings after all tangent, duplicate, and coincident cases
+ *     have been resolved correctly.
+ *
+ *     Since linePolygonIntersections() intentionally returns raw contacts,
+ *     this function uses midpoint classification instead of relying only
+ *     on crossing parity.
+ *
+ *     Therefore the return type must be:
+ *
+ *         std::vector<Segment<double>>
+ *
+ *     because one infinite line may create zero, one, or multiple
+ *     valid inside lane segments.
+ */
+inline std::vector<Segment<double>> clipLineToPolygonIntersections(const Polygon<double>& polygon, const Point<double>& unit_normal, double c) {
+
+    const double eps = 1e-10;
+    std::vector<Segment<double>> inside_segments_;
+    std::vector<Point<double>> intersections_ =  linePolygonIntersections(polygon, unit_normal, c);
+
+    // From normal vector to lane direction:
+    auto lane_direction = normalRight(unit_normal);
+
+    std::sort(intersections_.begin(),intersections_.end(),[&](const Point<double>& A, const Point<double>& B){
+        // Sort along the lane direction!
+        /*
+            Each point can be assumed to be a vector from origin to that point and getting a dot product of that vector to lane direction just projects the point in that direction
+        */
+        return dotProduct2D(A, lane_direction) < dotProduct2D(B, lane_direction);
+
+    });
+    intersections_.erase( std::unique( intersections_.begin(), intersections_.end(),
+            [&](const Point<double>& A, const Point<double>& B) {
+                return std::abs(A.x_ - B.x_) < eps
+                    && std::abs(A.y_ - B.y_) < eps;
+            }
+        ),
+        intersections_.end()
+    );
+
+    if (intersections_.size() < 2) {
+        std::cout << "NO INSIDE SEGMENT \n";
+        return std::vector<Segment<double>>();
+    }
+
+    std::cout << "CHECKING SEGMENTS INSIDE \n";
+
+    for (size_t i = 0 ; i + 1 < intersections_.size() ; i++) {
+
+        Point<double> start = intersections_.at(i);
+        Point<double> end = intersections_.at(i+1);
+
+        Point<double> sum = start + end;
+        Point<double> mid{sum.x_/2.0, sum.y_/2.0};
+
+        PointState state = pointInPolygon(mid, polygon);
+
+        if (state == PointState::INSIDE) {
+
+            inside_segments_.push_back(
+                Segment<double>{start,end}
+            );
+        }
+        else if (state == PointState::OUTSIDE) {
+
+            // This interval lies outside the polygon.
+            continue;
+        }
+        else if (state == PointState::BOUNDARY) {
+
+            // Degenerate / coincident case:
+            // this interval lies on the polygon boundary.
+            // For now, do not treat it as an interior coverage segment.
+            continue;
+        }
+    }
+        return inside_segments_;
 }
