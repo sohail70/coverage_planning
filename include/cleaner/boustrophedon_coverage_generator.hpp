@@ -7,10 +7,31 @@
 */
 
 #include "cleaner/bcd_type.hpp"
+#include "cleaner/geometry.hpp"
+#include "cleaner/metrics.hpp"
+
+
+struct CellCoverageCandidate
+{
+    cellID cell_id_;
+
+    double angle_;
+    double lane_spacing_;
+
+    std::vector<Segment<double>> lanes_;
+
+    Point<double> start_;
+    Point<double> end_;
+
+    CoverageMetrics metrics_;
+};
+
+
 
 class BoustrophedonCoverageGenerator {
     public:
-        void compute(const std::vector<BCDCell>& bcd_cells_);
+        void compute(const std::vector<BCDCell>& bcd_cells, double angle, double lane_spacing);
+        void generateLanes(const Polygon<double>& polygon, double angle, double lane_spacing);
     private:
 
 };

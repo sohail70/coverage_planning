@@ -1,12 +1,14 @@
 #pragma once
 
+#include "cleaner/cell_types.hpp"
 #include "cleaner/geometry.hpp"
 
 #include <vector>
 
+
 struct BCDCell
 {
-    int id_;
+    cellID id_;
 
     // Each polygon is one rectangular slab-piece belonging to this cell.
     /*

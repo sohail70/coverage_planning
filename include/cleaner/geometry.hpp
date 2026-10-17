@@ -7,6 +7,7 @@
 #include <ostream>
 #include <stdexcept>
 #include <vector>
+#include <iostream>
 
 
 /*
@@ -499,6 +500,9 @@ enum class Offset {
 
     Following function only naturally represents case 1.
 */
+/**
+    TODO: I NEED TO MAKE THE FOLLOWING MORE ROBUST so that it handles region elimination and other corner cases!
+*/
 inline Polygon<double> offsetEdgesForPolygon(const Polygon<double>& polygon, double rad, Offset offset) {
     if (rad <= 0) {
         throw std::runtime_error("Offset distance is invalid");
@@ -616,4 +620,103 @@ inline PolygonWithHoles<double> toDoubleGeometry(const PolygonWithHoles<int>& re
         result.holes_.push_back(toDoublePolygon(hole));
     }
     return  result;
+}
+
+
+inline void piToPi(double& theta){
+    theta = fmod(theta, 2*M_PI);
+    if (theta > M_PI) theta-= 2*M_PI;
+    if (theta <= -M_PI) theta+= 2*M_PI;
+}
+
+/*
+    cross (z, direction)
+    These functions are assumed to be used to find a normal dir of a vector in xy plane!
+*/
+inline Point<double> normalLeft(const Point<double>& direction) {
+    return Point<double>{-direction.y_ , direction.x_};
+}
+/*
+    cross (direction, z)
+*/
+inline Point<double> normalRight(const Point<double>& direction) {
+    return Point<double>{direction.y_ , -direction.x_};
+}
+
+
+
+/*
+    Assuming line (infinte segment) is represented by P.n = c  --> so dot product of p and n is c. P is just a point in a line and n is the normal vector of that line and c is just offset!
+    sanity check with n=(1,0). so if you expand the dot prodcut you get ax+by=c  assuming n=(a,b) and p=(x,y)
+    polygon has different segements so X = A + t (B-A)
+    and line is X.n = c 
+    so (A + t(B-A)).n = c so you can find t easily! t = (c- A.n) / (B-A).n
+
+
+    I remember I used some other represenation somewhere in the codebase (maybe in test_computational_geometry.cpp) that used an if check before finding the intersection but here we check if t is betweeen 0 and 1 and its enough
+*/
+inline std::vector<Point<double>> linePolygonIntersections( const Polygon<double>& polygon, const Point<double>& unit_normal, double c)
+{
+    std::vector<Point<double>> intersections_;
+
+    const double eps = 1e-10;
+
+    for (int i = 0 ; i < polygon.points_.size(); i++) {
+
+        Point<double> A = polygon.points_.at(i);
+        Point<double> B = polygon.points_.at((i+1)%polygon.points_.size());
+
+        double den = dotProduct2D(B-A, unit_normal);
+
+        // Polygon edge is parallel to the infinite line.
+        if (std::abs(den) < eps) {
+
+            double A_projection = dotProduct2D(A, unit_normal);
+
+            // CASE 1:
+            // Parallel, but on a different line -> no intersection.
+            if (std::abs(A_projection - c) >= eps) {
+                continue;
+            }
+
+            // CASE 2:
+            // The whole polygon edge lies on the infinite line.
+            //
+            // There is not one unique intersection point here;
+            // the intersection is actually the whole segment A-B.
+            //
+            // For now store both endpoints.
+            // The cleaning function later removes duplicated points
+            // caused by neighboring edges / shared vertices.
+            intersections_.push_back(A);
+            intersections_.push_back(B);
+
+            continue;
+        }
+
+        double t =
+            (c - dotProduct2D(A, unit_normal)) / den;
+
+        // Small tolerance is used because floating-point calculations
+        // may produce values such as -1e-15 or 1.000000000000001.
+        if (t >= -eps && t <= 1.0 + eps) {
+
+            // Clamp tiny numerical errors back onto the segment.
+            if (t < 0)
+                t = 0;
+
+            if (t > 1)
+                t = 1;
+
+            // There is an intersection with the finite polygon edge.
+            double x = A.x_ + t * (B.x_ - A.x_);
+            double y = A.y_ + t * (B.y_ - A.y_);
+
+            intersections_.push_back(
+                Point<double>{x,y}
+            );
+        }
+    }
+
+    return intersections_;
 }

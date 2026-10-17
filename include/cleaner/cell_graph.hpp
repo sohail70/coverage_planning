@@ -1,4 +1,5 @@
 #pragma once
+#include "cleaner/cell_types.hpp"
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
@@ -11,7 +12,6 @@
     so each type of decomposition needs to return CellGraph via a method like getGraph()
 */
 
-using cellID = int;
 struct CellEdge {
     cellID to_;
     double weight_ = 1.0;

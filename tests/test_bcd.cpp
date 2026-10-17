@@ -17,6 +17,8 @@ int main(int argc , char* argv[]){
     map_geometry_.showSimplifiedBoundaries(image_.getImage());
     map_geometry_.determineReachableRegion(Point<double>{152,313});
     auto free_region_ = map_geometry_.getFreeRegions().at(0);
+
+    ////Transition To double type for planning and adding clearance //////
     auto safe_region_ = applyClearance(toDoubleGeometry(free_region_.geometry_), 10.5);
 
     /////////////////////////////////BCD//////////////////////////////////
