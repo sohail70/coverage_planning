@@ -623,10 +623,36 @@ inline PolygonWithHoles<double> toDoubleGeometry(const PolygonWithHoles<int>& re
 }
 
 
-inline void piToPi(double& theta){
-    theta = fmod(theta, 2*M_PI);
+/*
+    range: (-π, π]
+
+    0°    ->   0°
+    180°  -> 180°
+    -180° -> 180°
+    270°  -> -90°
+    -270° ->  90°
+
+*/
+inline void piToPi(double& theta) {
+    theta = fmod(theta, 2*M_PI); // now theta is in (-2π, 2π)
     if (theta > M_PI) theta-= 2*M_PI;
     if (theta <= -M_PI) theta+= 2*M_PI;
+}
+// so 0 should stay 0, and π should become 0 in below function --> for lines (infinite segments) the line with PI angle is the same as 0
+/*
+examples : 
+    0° ->   0°
+    30° ->  30°
+    150° -> 150°
+    180° ->   0°
+    210° ->  30°
+    -30° -> 150°
+    360° ->   0°
+
+*/
+inline void zeroToPi(double& theta) {
+    theta = fmod(theta, M_PI);
+    if (theta < 0) theta += M_PI;
 }
 
 /*
@@ -654,6 +680,9 @@ inline Point<double> normalRight(const Point<double>& direction) {
 
 
     I remember I used some other represenation somewhere in the codebase (maybe in test_computational_geometry.cpp) that used an if check before finding the intersection but here we check if t is betweeen 0 and 1 and its enough
+
+
+    so P.n = c is : all points whose projection onto n is the same distance c. so basically c is the min distance of that line to origin
 */
 inline std::vector<Point<double>> linePolygonIntersections( const Polygon<double>& polygon, const Point<double>& unit_normal, double c) {
     std::vector<Point<double>> intersections_;

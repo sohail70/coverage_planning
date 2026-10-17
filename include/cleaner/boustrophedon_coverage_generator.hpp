@@ -11,14 +11,21 @@
 #include "cleaner/metrics.hpp"
 
 
-struct CellCoverageCandidate
+struct CoverageLane
+{
+    double c_; // Signed normal offset of this sweep line from the geometry coordinate origin (0,0), assuming the normal is unit length.
+    std::vector<Segment<double>> segments_;
+};
+
+struct CellCoverage
 {
     cellID cell_id_;
 
     double angle_;
-    double lane_spacing_;
+    double lane_spacing_; // actual spacing used, not necessarily requested max
 
-    std::vector<Segment<double>> lanes_;
+    std::vector<CoverageLane> lanes_;
+
 
     Point<double> start_;
     Point<double> end_;
@@ -30,8 +37,9 @@ struct CellCoverageCandidate
 
 class BoustrophedonCoverageGenerator {
     public:
-        void compute(const std::vector<BCDCell>& bcd_cells, double angle, double lane_spacing);
-        void generateLanes(const Polygon<double>& polygon, double angle, double lane_spacing);
+        std::vector<CellCoverage> compute( const std::vector<BCDCell>& bcd_cells, const std::vector<double>& angles, double max_lane_spacing);
+        CellCoverage generateCoverage(const BCDCell& bcd_cells, double angle, double max_lane_spacing);
+        std::vector<CoverageLane> generateLanes( const Polygon<double>& polygon, const Point<double>& lane_normal, double min_range, int count, double lane_spacing);
     private:
 
 };
