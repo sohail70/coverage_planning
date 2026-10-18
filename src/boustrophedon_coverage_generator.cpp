@@ -5,17 +5,11 @@
 
 
 
-std::vector<CellCoverage> BoustrophedonCoverageGenerator::compute(const std::vector<BCDCell>& bcd_cells, const std::vector<double>& angles, double max_lane_spacing) {
+std::vector<CellCoverage> BoustrophedonCoverageGenerator::compute(const std::vector<BCDCell>& bcd_cells, const std::vector<double>& cell_angles, double max_lane_spacing) {
 
-}
-
-
-
-CellCoverage BoustrophedonCoverageGenerator::generateCoverage(const BCDCell& bcd_cell, double angle, double max_lane_spacing) {
-    if (max_lane_spacing <= 0)
-        throw std::runtime_error("generateLanes: lane spacing must be positive");
+    auto normalized_cell_angles_ = cell_angles;
     /**
-        coverage-angle normalization should probably be modulo π, not modulo \(2π\). In other words, for lane orientation, you only need something like:
+        coverage-angle normalization should be modulo π, not modulo 2π. In other words, for lane orientation, you only need something like:
                 [0, π)
                 rather than:
                 [-π, π)
@@ -27,7 +21,26 @@ CellCoverage BoustrophedonCoverageGenerator::generateCoverage(const BCDCell& bcd
         line orientation:
         0° == 180°
     */
-    zeroToPi(angle);
+    for (auto& angle : normalized_cell_angles_)
+        zeroToPi(angle);
+
+    std::vector<CellCoverage> cell_coverages_;
+
+    for (int i = 0; i < bcd_cells.size() ; i++) {
+        CellCoverage cc = generateCoverage(bcd_cells.at(i), normalized_cell_angles_.at(i), max_lane_spacing);
+        cell_coverages_.push_back(cc);
+    }
+
+    return cell_coverages_;
+
+}
+
+
+
+CellCoverage BoustrophedonCoverageGenerator::generateCoverage(const BCDCell& bcd_cell, double angle, double max_lane_spacing) {
+    if (max_lane_spacing <= 0)
+        throw std::runtime_error("generateLanes: lane spacing must be positive");
+
     Point<double> lane_direction_{cos(angle), sin(angle)};
     // normalize(lane_direction_); // unnecessery because cos^2 + sin^2 = 1
     Point<double> lane_normal_ = normalLeft(lane_direction_);
@@ -49,6 +62,15 @@ CellCoverage BoustrophedonCoverageGenerator::generateCoverage(const BCDCell& bcd
     cc_.lanes_ = generateLanes( polygon_, lane_normal_, min_range_, count_, real_lane_spacing_);
 
 
+    // buildTraversal(cc_, polygon_);
+
+    // // buildTraversal establishes the actual ordered robot path,
+    // // therefore start_ and end_ become meaningful here.
+
+    // calculateMetrics(cc_);
+
+
+
     return cc_;
 }
 
@@ -68,5 +90,11 @@ std::vector<CoverageLane> BoustrophedonCoverageGenerator::generateLanes( const P
     }
 
     return coverageLanes_;
+
+}
+
+
+
+void BoustrophedonCoverageGenerator::findTransition( Point<double> from, Point<double> to, Polygon<double> cell_polygon) {
 
 }
