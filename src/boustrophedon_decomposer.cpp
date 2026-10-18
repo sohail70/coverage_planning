@@ -506,13 +506,13 @@ void BoustrophedonDecomposer::compute(const PolygonWithHoles<double>& polygon){
 
         but there are zero adjacency edges.
         Without:
-        graph_.addCell(0);
+        graph_.addNode(0);
 
         the graph would incorrectly contain no node at all.
     
     */
     for (const auto& cell: bcd_cells_) {
-        graph_.addCell(cell.id_);
+        graph_.addNode(cell.id_);
     }
 
 
@@ -1177,7 +1177,7 @@ void BoustrophedonDecomposer::showBCDCells( const cv::Mat& original_image, bool 
     cv::waitKey(0);
 }
 
-const CellGraph& BoustrophedonDecomposer::getGraph() const {
+const WeightedGraph& BoustrophedonDecomposer::getGraph() const {
     return graph_;
 }
 

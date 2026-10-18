@@ -3,7 +3,7 @@
 #include <vector>
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/bcd_type.hpp"
-#include "cleaner/cell_graph.hpp"
+#include "cleaner/weighted_graph.hpp"
 
 /*
     Note about Units and Types:
@@ -34,7 +34,7 @@ class BoustrophedonDecomposer {
 
         void compute(const PolygonWithHoles<double>& polygon); // in the end it fills the bcd_cells_
 
-        const CellGraph& getGraph() const;
+        const WeightedGraph& getGraph() const;
         const std::vector<BCDCell>& getCells() const;
 
         // Debug Plots
@@ -78,7 +78,7 @@ class BoustrophedonDecomposer {
 
         std::vector<BCDCell> bcd_cells_;
 
-        CellGraph graph_;
+        WeightedGraph graph_;
 
         std::vector<BoustrophedonDecomposer::IntervalConnection> overlapGraph(const BoustrophedonDecomposer::VerticalSlice& slice_left , const BoustrophedonDecomposer::VerticalSlice& slice_right);
         void propagateCellIDs(const std::vector<std::vector<int>>& successor , const std::vector<std::vector<int>>& predecessors, BoustrophedonDecomposer::VerticalSlice& slice_left, BoustrophedonDecomposer::VerticalSlice& slice_right, int& next_cell_id_);

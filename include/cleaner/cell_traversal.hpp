@@ -1,16 +1,16 @@
 #pragma once
 
-#include "cleaner/cell_graph.hpp"
+#include "cleaner/weighted_graph.hpp"
 /*
     Traversal does NOT depend on BCD.
-    Traversal depends only on CellGraph.
+    Traversal depends only on WeightedGraph.
 
 
     BCD result is an undirected graph with cycle
     DFS/BFS handle that by keeping track of which nodes have already been visited.
 
 
-    Original CellGraph
+    Original WeightedGraph
         may contain cycles
         may have many connections
 
@@ -31,7 +31,7 @@ class CellTraversal {
     public:
         virtual ~CellTraversal() = default;
 
-        virtual TraversalResult compute(const CellGraph& cells, cellID start_cell_id) = 0;
+        virtual TraversalResult compute(const WeightedGraph& cells, cellID start_cell_id) = 0;
     private:
 
 };

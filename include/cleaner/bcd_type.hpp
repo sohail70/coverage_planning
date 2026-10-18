@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cleaner/cell_types.hpp"
+#include "cleaner/planning_types.hpp"
 #include "cleaner/geometry.hpp"
 
 #include <vector>

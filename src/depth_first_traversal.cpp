@@ -1,10 +1,10 @@
 #include "cleaner/depth_first_traversal.hpp"
-#include "cleaner/cell_graph.hpp"
+#include "cleaner/weighted_graph.hpp"
 #include "cleaner/cell_traversal.hpp"
 #include <unordered_set>
 
 
-TraversalResult DepthFirstTraversal::compute(const CellGraph& cells, cellID start_cell_id) {
+TraversalResult DepthFirstTraversal::compute(const WeightedGraph& cells, cellID start_cell_id) {
     TraversalResult res_;
 
     // Have I already discovered this node?
@@ -69,7 +69,7 @@ TraversalResult DepthFirstTraversal::compute(const CellGraph& cells, cellID star
     visit_order_: 0, 1, 2, 3
     walk_: 0, 1, 2, 1, 3, 1, 0
 */
-void DepthFirstTraversal::dfs(const CellGraph& cells, cellID current_cell_id, std::unordered_set<cellID>& visited, TraversalResult& res_) {
+void DepthFirstTraversal::dfs(const WeightedGraph& cells, cellID current_cell_id, std::unordered_set<cellID>& visited, TraversalResult& res_) {
     const auto& neighbors_ = cells.neighbors(current_cell_id);
     for (const auto& n : neighbors_ ) {
         auto iter = std::find(visited.begin(), visited.end(), n.to_);
