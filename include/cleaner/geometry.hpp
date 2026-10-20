@@ -974,3 +974,171 @@ inline std::vector<Segment<double>> clipLineToPolygonIntersections(const Polygon
     }
         return inside_segments_;
 }
+
+
+
+///////////////////////////////// 
+
+/**
+ * Possible geometric cases for two finite segments:
+ *
+ * 1. Non-parallel segments
+ *    a) Proper crossing
+ *       -> 1 intersection point
+ *
+ *    b) Touching at an endpoint
+ *       -> 1 intersection point
+ *
+ *    c) Their infinite lines intersect, but the intersection lies
+ *       outside one or both finite segments
+ *       -> 0 intersection points
+ *
+ *
+ * 2. Parallel but NOT collinear
+ *    -> 0 intersection points
+ *
+ *
+ * 3. Collinear
+ *    a) Disjoint
+ *       -> 0 intersection points
+ *
+ *    b) Touch at exactly one endpoint
+ *       -> 1 intersection point
+ *
+ *    c) Overlap over a finite interval
+ *       -> 2 points:
+ *          the two endpoints of the overlapping portion
+ *
+ *
+ * Return convention:
+ *
+ * 0 points -> no common point
+ * 1 point  -> single-point intersection
+ * 2 points -> collinear overlapping interval
+ *
+ *
+ * Example of collinear overlap:
+ *
+ * Segment 1:   A ====================== B
+ * Segment 2:          C ========== D
+ *
+ * Intersection:
+ *                       C ========== D
+ *
+ * Returned points:
+ *     C, D
+ */
+// The following is not based on orientationTest! that way (in the test_computational_geometry) was useful if we only wanted to return a bool of having intersection or not!
+/*
+
+    r × s != 0
+        -> nonparallel
+        -> calculate t,u
+        -> actual intersection point if both lie in [0,1]
+
+    r × s == 0
+        |
+        +-- q × r != 0
+        |      -> parallel, separate
+        |
+        +-- q × r == 0
+            -> collinear
+            -> reduce to 1D
+            -> disjoint / touching / overlap
+
+*/
+inline std::vector<Point<double>> segmentSegmentIntersection(const Segment<double> AB, const Segment<double> CD) {
+    Point<double> A = AB.start_;
+    Point<double> B = AB.end_;
+    Point<double> C = CD.start_;
+    Point<double> D = CD.end_;
+    
+    
+
+    Point<double> r = B - A;
+    Point<double> q = C - A;
+    Point<double> s = D - C;
+
+    double eps_ = 1e-10;
+    if (dotProduct2D(r, r) <= eps_*eps_ ||
+        dotProduct2D(s, s) <= eps_*eps_ ) {
+            throw std::runtime_error("segmentSegmentIntersection: Segment has zero length!");
+    }
+
+
+    std::vector<Point<double>> intersection_; // Might be zero intersection , 1 intersection or an interval of intersections in collinear case where we return two end Points from the overlap!
+
+    double den = crossProduct2D(r, s);
+    if (std::abs(den) <= eps_ ){
+        // Either Collinear or Parallel
+        if(std::abs(crossProduct2D(q, r)) <= eps_) { // Read as cross(q,r)==0
+            // Collinear! both segments exist on the same (infinite) line (By line I imply infinite but doesnt hurt to mention it)
+            // Still need to check if they have an overlap or not! we dont know if C is near to the AB line or D so we check both ways
+            double tc = dotProduct2D(C - A, r) / dotProduct2D(r, r);
+            double td = dotProduct2D(D - A, r) / dotProduct2D(r, r);
+
+            double lo = std::max(0.0, std::min(tc, td));
+            double hi = std::min(1.0, std::max(tc, td));
+            /*
+                overall its either lo == hi which mean one point intersection which means end point touching
+                or lo < hi significantly which means we are dealing with an interval!
+            */
+            if (hi > lo + eps_) {
+                // then we are dealing with an overlap interval!
+                Point<double> start_of_interval_ = A + r * lo;
+                Point<double> end_of_interval_ = A + r * hi;
+                intersection_.push_back(start_of_interval_);
+                intersection_.push_back(end_of_interval_);
+                return intersection_;
+            }
+            else if (std::abs(lo - hi) <= eps_) {
+                // we are dealing with single point (end point touching) so if start and end are the same then we are in end point touching
+                Point<double> point_ = A + r * lo;
+                intersection_.push_back(point_);
+                return intersection_;
+
+            }
+            // Otherwise hi < lo significantly:
+            // collinear but disjoint
+            return intersection_;
+        }
+        else {
+            // Parallel but not collinear -> 0 intersections
+            return intersection_;
+        }
+    }
+    else {
+        // Surely there is an Intersection assuming Infinite lines! but for segemetns intersections we gotta check! 
+        double t = crossProduct2D(q, s) / den;
+        double u = crossProduct2D(q, r) / den;
+        if (t >= -eps_ && t <= 1 + eps_ && u >=-eps_ && u <= 1 + eps_) {
+            /*
+                And after accepting t with tolerance  
+                Otherwise a legitimate endpoint intersection might produce something like:
+                    t = -0.00000000003
+                and your returned point would technically be microscopically outside segment AB.
+            */
+            t = std::clamp(t, 0.0, 1.0); //
+
+            // surely there is an intersection between segments
+            double x = A.x_ + t * (B.x_ - A.x_);
+            double y = A.y_ + t * (B.y_ - A.y_);
+            intersection_.push_back(Point<double>{x,y});
+        }
+    }
+
+
+    /*
+        infinite lines intersect
+                ↓
+        but t or u is outside [0,1]
+    */
+    return intersection_;
+
+
+}
+
+
+inline void segmentPolygonIntersections( const Segment<double>& segment, const Polygon<double>& polygon) {
+
+}
