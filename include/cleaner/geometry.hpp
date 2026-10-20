@@ -1139,6 +1139,172 @@ inline std::vector<Point<double>> segmentSegmentIntersection(const Segment<doubl
 }
 
 
-inline void segmentPolygonIntersections( const Segment<double>& segment, const Polygon<double>& polygon) {
+struct SegmentPolygonIntersection
+{
+    std::vector<Point<double>> points_;
+    std::vector<Segment<double>> overlaps_;
+};
 
+inline SegmentPolygonIntersection segmentPolygonIntersections( const Segment<double>& segment, const Polygon<double>& polygon) {
+
+    SegmentPolygonIntersection intersections_;
+    for (int i = 0; i < polygon.points_.size(); i++) {
+        Point<double> A = polygon.points_.at(i);
+        Point<double> B = polygon.points_.at((i+1)%polygon.points_.size());
+        
+        auto intersection_ =  segmentSegmentIntersection(segment, Segment<double>{A, B});
+
+        if (intersection_.size() == 0 ) {
+            // No intersection
+            continue;
+        }
+        else if (intersection_.size() == 1) {
+            // One intersection
+            intersections_.points_.push_back(intersection_.at(0));
+        }
+        else if (intersection_.size() == 2) {
+            // Overlap 
+            intersections_.overlaps_.push_back(Segment{intersection_.at(0), intersection_.at(1)});
+        }
+    }
+
+    /*
+        deduplicate
+        points_ = unique isolated intersection points
+        overlaps_ = unique overlap intervals
+
+        overlaps_: --> But the thing is i already am doing a simplification of polygon representation so if a straight semgent is from P0 to P1 and P2 i already am removed the P1 out ofthe picture but it never hurts to be safe!
+            P0 -> P1
+            P1 -> P2
+    */
+
+    // sort them along the candidate segment
+    std::sort(intersections_.points_.begin(), intersections_.points_.end() , [&](const Point<double>& A , const Point<double>& B){
+        Point<double> r = segment.end_ - segment.start_; // Segment direction
+        return dotProduct2D(A, r) < dotProduct2D(B, r);
+    });
+
+    // Beware that std::unique in its default form uses Point<double>::operator== but here we use epsilon safety otherwise two copies of the same polygon vertex such as (5.0, 3.0) and (5.00000000001, 3.0)
+    intersections_.points_.erase(std::unique(intersections_.points_.begin(),intersections_.points_.end(),[](const Point<double>& A, const Point<double>& B){
+        double eps_ = 1e-10;
+        if (std::abs(A.x_ - B.x_) <= eps_ && std::abs(A.y_ - B.y_) <= eps_) return true;
+        else return false;
+    }), intersections_.points_.end());
+
+    /*
+        sort overlaps by start position along candidate segment
+
+        if no overlaps:
+            done
+
+        current = first overlap
+
+        for each remaining overlap:
+            next = ...
+
+            if next.start is at or before current.end (+epsilon):
+                extend current.end to the farther of:
+                    current.end
+                    next.end
+
+            else:
+                save current
+                current = next
+
+        save final current
+
+
+        A----B
+            C----D
+                E----F
+
+
+
+        current: A---------------B
+        next:          C----D
+    */
+    // sort them along the candidate segment --> maybe sorting each segment by its starting point is enough
+    std::sort(intersections_.overlaps_.begin(), intersections_.overlaps_.end() , [&](const Segment<double>& AB , const Segment<double>& CD){
+        Point<double> r = segment.end_ - segment.start_; // Segment direction
+
+        return dotProduct2D(AB.start_, r) < dotProduct2D(CD.start_, r);
+    });
+
+    if (intersections_.overlaps_.size() > 1 ) {
+        std::vector<Segment<double>> deduplicated_overlaps_;
+        auto current_ = intersections_.overlaps_.at(0);
+        for (int i = 1 ; i <intersections_.overlaps_.size() ; i++) {
+            Point<double> A = current_.start_;
+            Point<double> B = current_.end_;
+
+            auto next_ = intersections_.overlaps_.at(i);
+            Point<double> C = next_.start_;
+            Point<double> D = next_.end_;
+            Point<double> r = B - A;
+            double tc = dotProduct2D(C - A, r) / dotProduct2D(r, r);
+            double eps_ = 1e-10;
+            if( tc <= 1 + eps_) {
+
+                double td = dotProduct2D(D - A, r) / dotProduct2D(r, r);
+                if (td > 1 + eps_){
+                    current_.end_ = next_.end_;
+                }
+                else {
+                    // its this case:
+                    // current: A---------------B
+                    // next:          C----D
+                    // so the current end remains the same!
+                }
+
+            }
+            else {
+                // Gap -> current interval is finished
+                deduplicated_overlaps_.push_back(current_);
+
+                // Start a new interval
+                current_ = next_;
+
+            }
+
+        }
+        // Save the last active interval
+        deduplicated_overlaps_.push_back(current_);
+
+        intersections_.overlaps_ = deduplicated_overlaps_;
+    }
+
+    // remove the points that are already part of the overlap
+    // For each point, ask: Does this point lie on any segment in overlaps_?
+    double eps_ = 1e-10;
+
+    intersections_.points_.erase(
+        std::remove_if(
+            intersections_.points_.begin(),
+            intersections_.points_.end(),
+            [&](const Point<double>& point_)
+            {
+                for (const auto& overlap_ : intersections_.overlaps_)
+                {
+                    Point<double> A = overlap_.start_;
+                    Point<double> B = overlap_.end_;
+                    Point<double> r = B - A;
+
+                    double t =
+                        dotProduct2D(point_ - A, r) /
+                        dotProduct2D(r, r);
+
+                    if (t >= -eps_ && t <= 1.0 + eps_)
+                    {
+                        return true; // remove this point
+                    }
+                }
+
+                return false; // keep this point
+            }),
+        intersections_.points_.end()
+    );
+
+
+
+    return intersections_;
 }
