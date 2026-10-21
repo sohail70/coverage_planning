@@ -71,6 +71,8 @@ add_library(coverage_core
     src/boustrophedon_decomposer.cpp
     src/depth_first_traversal.cpp
     src/boustrophedon_coverage_generator.cpp
+    src/visibility_graph.cpp
+    src/holonomic_polygon_transtion_planner.cpp
 )
 
 # The nice part is that because this is PUBLIC:

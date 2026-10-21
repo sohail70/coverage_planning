@@ -128,6 +128,11 @@ class WeightedGraph {
                 << "\n";
         }
 
+        size_t nodeCount() {
+            return adjacency_.size();
+        }
+      
+
     private:
         std::unordered_map<nodeID, std::vector<GraphEdge>> adjacency_; // <1,2> --> from 1 to 2 --> so a node can connect to many other cells with an edge with a weight
 };

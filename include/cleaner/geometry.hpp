@@ -102,6 +102,13 @@ T dotProduct2D(const Point<T>& A , const Point<T>& B){
     return (A.x_*B.x_ + A.y_*B.y_);
 }
 
+
+inline double distance(const Point<double>& A , const Point<double>& B) {
+    Point<double> r = B - A;
+    return std::sqrt(r.x_*r.x_ + r.y_*r.y_);
+}
+
+
 enum class Orientation {
     CW,
     CCW,
@@ -1311,7 +1318,7 @@ inline SegmentPolygonIntersection segmentPolygonIntersections( const Segment<dou
 
 
 
-bool isSegmentInsidePolygon(const Segment<double>& segment, const Polygon<double>& polygon) {
+inline bool isSegmentInsidePolygon(const Segment<double>& segment, const Polygon<double>& polygon) {
 
     Point<double> A = segment.start_;
     Point<double> B = segment.end_;
