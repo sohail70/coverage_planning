@@ -1308,3 +1308,77 @@ inline SegmentPolygonIntersection segmentPolygonIntersections( const Segment<dou
 
     return intersections_;
 }
+
+
+
+bool isSegmentInsidePolygon(const Segment<double>& segment, const Polygon<double>& polygon) {
+
+    Point<double> A = segment.start_;
+    Point<double> B = segment.end_;
+    Point<double> r = B - A;
+    double eps_ = 1e-10;
+    if (dotProduct2D(r, r) <= eps_ * eps_) {
+        throw std::runtime_error("isSegmentInsidePolygon: Segment Length is zero!");
+    }
+
+    auto s1 = pointInPolygon(A, polygon);
+    auto s2 = pointInPolygon(B, polygon);
+
+    if (s1 == PointState::OUTSIDE || s2 == PointState::OUTSIDE) {
+        return false;
+    }
+    // So now both endpoint are either inside or boundary :  both endpoints being inside does not guarantee that the line between them stays inside so we do the mid point check
+    auto intersections_ = segmentPolygonIntersections(segment, polygon);
+
+    auto intersection_points_ = intersections_.points_;
+    auto intersection_overlaps_ = intersections_.overlaps_;
+
+    /*
+        Treat the candidate segment as a line that you want to divide into smaller intervals. You need to divide it at every place where it touches or overlaps the polygon boundary.
+        The procedure is:
+        1. Start with the candidate endpoints, A and B.
+        2. Add every isolated intersection point.
+        3. Add the start and end of every overlap segment.
+        4. Sort all these points in the order they occur along the candidate segment.
+        5. Test the midpoint of each consecutive pair. If any midpoint is OUTSIDE, return false. Otherwise, return true.
+    */
+    std::vector<Point<double>> all_important_points_;
+    all_important_points_.push_back(segment.start_);
+    all_important_points_.push_back(segment.end_);
+    for (const auto& p : intersection_points_) {
+        all_important_points_.push_back(p);
+    }
+    for (const auto& s : intersection_overlaps_) {
+        all_important_points_.push_back(s.start_);
+        all_important_points_.push_back(s.end_);
+    }
+
+    std::sort(all_important_points_.begin(), all_important_points_.end(), [&](const Point<double>& A, const Point<double>& B){
+        Point<double> seg_dir_ = segment.end_ - segment.start_;
+        // How far along the segment direction does the position vector of this point project?
+        return dotProduct2D(A, seg_dir_) < dotProduct2D(B, seg_dir_);
+        // one could also use this : How far along the segment direction does the displacement from the segment start project?
+        // dotProduct2D(P - segment.start_, seg_dir_)
+        /*
+            these dot products are projection scores, not the actual signed projection distances. To obtain the signed distance along the segment's direction, divide by \(\|\mathbf{d}\|\). To obtain the normalized segment parameter \(t\), divide by \(\mathbf{d}\cdot\mathbf{d}\):
+                t = (P - S).d / d.d
+        */
+    });
+
+
+
+    for (int i = 0 ; i + 1 < all_important_points_.size() ; i++) {
+        Point<double> A = all_important_points_.at(i);
+        Point<double> B = all_important_points_.at(i+1);
+        Point<double> mid_point_ = Point<double>{(A.x_ + B.x_)/2 , (A.y_ + B.y_)/2};
+        auto state = pointInPolygon(mid_point_ , polygon);
+        if (state == PointState::OUTSIDE) {
+            return false;
+        }
+    }
+
+
+    return true;
+
+
+}
