@@ -1,5 +1,6 @@
 #include "cleaner/boustrophedon_coverage_generator.hpp"
 #include "cleaner/geometry.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 
@@ -93,8 +94,35 @@ std::vector<CoverageLane> BoustrophedonCoverageGenerator::generateLanes( const P
 
 }
 
+/*
+    Sort lanes by c_, 
+    Within each lane, keep its disconnected segments as separate coverage tasks.
+    At the current segment's exit endpoint, evaluate feasible transitions to unvisited segments in the current lane first, then the next lane.
+    If those candidates are unsuitable, expand the search to nearby lanes.
+    Once all segments have been ordered and oriented, construct traversal_ by inserting the transition paths.
+*/
+// lane-aware greedy method
+void BoustrophedonCoverageGenerator::buildTraversal(CellCoverage& cc, const Polygon<double>& polygon ) {
+    // // cc.traversal_ ?
+    // auto& lanes = cc.lanes_;
+    // // sort the lanes based on c in P.n = c --> even though this is a formula for line but maybe we can use one point ofthe segment to calculate c
+    // // I think they are already sorter but doesnt hurt!
+    // std::sort(lanes.begin(), lanes.end(),
+    // [](const CoverageLane& A, const CoverageLane& B) {
+    //     return A.c_ < B.c_;
+    // });
+    // std::vector<PathSegment> route_;
+    // for (int i = 0 ; i < lanes.size() ; i++){
+    //     auto lane1 = lanes.at(i)
+    //     if (lanes.at(i).segments_.size() == 1) {
+    //         PathSegment ps_;
+    //         ps_.segment_ = lanes.at(i).segments_.at(0);
+    //         ps_.type_ = PathType::COVERAGE;
+    //         route_.push_back(ps_);
+    //     }
+    //     else if( lanes.at(i).segments_.size() > 1) {
 
-
-void BoustrophedonCoverageGenerator::findTransition( Point<double> from, Point<double> to, Polygon<double> cell_polygon) {
-
+    //     }
+    // }
+    
 }

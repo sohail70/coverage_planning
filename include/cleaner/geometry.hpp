@@ -3,6 +3,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <math.h>
 #include <ostream>
 #include <stdexcept>
@@ -1388,4 +1389,126 @@ inline bool isSegmentInsidePolygon(const Segment<double>& segment, const Polygon
     return true;
 
 
+}
+
+
+
+
+inline std::vector<double> polygonSegmentAngles(const Polygon<double>& polygon) {
+    std::vector<double> angles_;
+
+    for (int i = 0 ; i < polygon.points_.size() ; i++) {
+        Point<double> A = polygon.points_.at(i);
+        Point<double> B = polygon.points_.at((i+1)%polygon.points_.size());
+
+        double angle = std::atan2(B.y_ - A.y_ , B.x_ - A.x_); // radians, [-pi, pi]
+        if (angle < 0.0) {
+            angle += M_PI;
+        }
+
+        if (angle >= M_PI) {
+            angle -= M_PI;
+        }
+        // Now angle is in [0, pi) for an undirected line orientation.
+        angles_.push_back(angle);
+    }
+    // Deduplicate with a tolerance
+    angles_.erase((std::unique(angles_.begin(),angles_.end(),[](double a, double b){
+        // unique with an epsilon tolerance
+        double eps_ = 1e-10;
+        return std::abs(a-b)< eps_;
+    })), angles_.end());
+
+    return angles_;
+}
+
+inline std::vector<double> candidateLaneAnglesForPolygon(std::vector<double> angles, const Polygon<double>& polygon) {
+    // if any of the lane directions produces more than two segments then it means one line is producing more than two intersections and its not in accord with polygon's monotonicity! so we discard it
+}
+
+
+
+/*
+ * Returns whether a simple polygon can be covered using parallel lanes
+ * at the given lane direction, such that every lane intersects the
+ * polygon in at most one connected segment.
+ *
+ * Assumptions:
+ * - The polygon is simple and has no holes.
+ * - angle is the lane direction, in radians.
+ *
+ * Implementation steps:
+ *
+ * 1. Validate the polygon.
+ *    - If it has fewer than three vertices, return false.
+ *
+ * 2. Calculate the unit normal perpendicular to the lane direction.
+ *    - nx = -sin(angle)
+ *    - ny =  cos(angle)
+ *
+ * 3. Project every polygon vertex onto this normal.
+ *    - For each vertex p[i], calculate:
+ *          s[i] = dot(p[i], normal)
+ *    - These values describe the position of each vertex across
+ *      the parallel lanes.
+ *
+ * 4. Find the minimum and maximum projection values and their
+ *    corresponding vertex indices.
+ *    - These identify the bottommost and topmost parts of the
+ *      polygon in the coordinate system of this sweep direction.
+ *
+ * 5. Check the polygon boundary in both directions.
+ *    - Starting at a minimum-projection vertex, follow the polygon
+ *      vertices in their original cyclic order until reaching a
+ *      maximum-projection vertex.
+ *    - Check that the projection values never decrease, allowing
+ *      a small numerical tolerance.
+ *    - Repeat the check while traversing the polygon in the
+ *      opposite direction.
+ *
+ * 6. Decide whether the direction is sweepable.
+ *    - If both boundary chains are nondecreasing, return true.
+ *    - If either chain decreases, return false.
+ *
+ * Important:
+ * - Do not generate lanes or use lane spacing in this function.
+ * - Equal projections are allowed, including those caused by
+ *   edges parallel to the lanes.
+ * - Handle repeated minimum/maximum projections and collinear
+ *   boundary edges carefully.
+ * - Use the projection tolerance consistently when comparing values.
+ */
+inline bool isSweepable( const Polygon<double>& polygon, double angle) {
+    if (polygon.points_.size() < 3) 
+        throw std::runtime_error("isSweepable : Polygon has less than 3 verticies");
+
+    Point<double> lane_direction_{std::cos(angle), std::sin(angle)};
+    Point<double> lane_normal_ = normalLeft(lane_direction_); // {-sin(angle), cos(angle)}
+
+    std::vector<double> projections_; // Aligned with polygon.points_ indices
+
+    for (int i = 0 ; i < polygon.points_.size() ; i++) {
+        projections_.push_back(dotProduct2D(polygon.points_.at(i), lane_normal_));
+    }
+
+    auto min_it_ = std::min_element(projections_.begin(), projections_.end());
+    auto max_it_ = std::max_element(projections_.begin(), projections_.end());
+    
+    size_t min_index_ = std::distance(projections_.begin(), min_it_);
+    size_t max_index_ = std::distance(projections_.begin(), max_it_);
+
+    // forward move
+    for (size_t i = min_index_ ; i + 1 < max_index_ ; i++) {
+        if (projections_.at(i) > projections_.at(i+1))
+            return false;
+    }
+
+    // Backward move
+    for (size_t i = 0 ; i < projections_.size() ; i++) {
+        
+
+    }
+
+
+    
 }

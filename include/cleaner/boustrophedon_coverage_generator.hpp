@@ -64,6 +64,9 @@ class BoustrophedonCoverageGenerator {
         std::vector<CellCoverage> compute( const std::vector<BCDCell>& bcd_cells, const std::vector<double>& angles, double max_lane_spacing);
         CellCoverage generateCoverage(const BCDCell& bcd_cells, double angle, double max_lane_spacing);
         std::vector<CoverageLane> generateLanes( const Polygon<double>& polygon, const Point<double>& lane_normal, double min_range, int count, double lane_spacing);
+
+        void buildTraversal(CellCoverage& cc, const Polygon<double>& polygon );
+
     private:
         void findTransition( Point<double> from, Point<double> to, Polygon<double> cell_polygon);
 
