@@ -9,12 +9,26 @@
 #include "cleaner/bcd_type.hpp"
 #include "cleaner/geometry.hpp"
 #include "cleaner/metrics.hpp"
-
-
+#include "cleaner/transition_planner.hpp"
+#include "opencv2/opencv.hpp"
+#include <random>
 struct CoverageLane
 {
     double c_; // Signed normal offset of this sweep line from the geometry coordinate origin (0,0), assuming the normal is unit length.
     std::vector<Segment<double>> segments_;
+};
+
+/*
+    LowToHigh: visit lanes in increasing c_ order.
+    HighToLow: visit lanes in decreasing c_ order.
+    StartAlongLane: traverse the first lane along lane_direction.
+    StartAgainstLane: traverse the first lane against lane_direction.
+*/
+enum class SweepPatternVariant {
+    LowToHigh_StartAlongLane,
+    LowToHigh_StartAgainstLane,
+    HighToLow_StartAlongLane,
+    HighToLow_StartAgainstLane
 };
 
 enum class PathType
@@ -28,6 +42,7 @@ struct PathSegment
     Segment<double> segment_;
     PathType type_;
 };
+
 
 struct CellCoverage
 {
@@ -57,18 +72,26 @@ struct CellCoverage
     CoverageMetrics metrics_;
 };
 
+struct CellCoverageCandidates {
+    cellID cell_id_;
+    std::vector<CellCoverage> patterns_;
+};
 
 
 class BoustrophedonCoverageGenerator {
     public:
-        std::vector<CellCoverage> compute( const std::vector<BCDCell>& bcd_cells, const std::vector<double>& angles, double max_lane_spacing);
-        CellCoverage generateCoverage(const BCDCell& bcd_cells, double angle, double max_lane_spacing);
+        explicit BoustrophedonCoverageGenerator( TransitionPlanner2D& transition_planner);
+
+        std::vector<CellCoverageCandidates> compute( const std::vector<BCDCell>& bcd_cells, double max_lane_spacing);
+        CellCoverage generateCoverage(const BCDCell& bcd_cells, double angle, double max_lane_spacing, SweepPatternVariant pattern);
         std::vector<CoverageLane> generateLanes( const Polygon<double>& polygon, const Point<double>& lane_normal, double min_range, int count, double lane_spacing);
 
-        void buildTraversal(CellCoverage& cc, const Polygon<double>& polygon );
+        void buildTraversal(CellCoverage& cc, const Polygon<double>& polygon, SweepPatternVariant pattern);
+        void calculateMetrics(CellCoverage& cc);
+        void showCoverageCandidates( const cv::Mat& original_image, const std::vector<CellCoverageCandidates>& candidates) const;
 
     private:
-        void findTransition( Point<double> from, Point<double> to, Polygon<double> cell_polygon);
+        TransitionPlanner2D& transition_planner_;
 
 
 };

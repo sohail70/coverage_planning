@@ -1,5 +1,4 @@
 #pragma once
-#include "cleaner/map_geometry.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -193,12 +192,13 @@ inline PointState pointInPolygon(const Point<double> P, const Polygon<T>& polygo
         }
     }
 
-    if ((count%2)==0){
-        return PointState::OUTSIDE;
-    }
-    else if((count%2)!=0){
-        return PointState::INSIDE;
-    }
+    // if ((count%2)==0){
+    //     return PointState::OUTSIDE;
+    // }
+    // else if((count%2)!=0){
+    //     return PointState::INSIDE;
+    // }
+    return (count % 2 == 0) ? PointState::OUTSIDE : PointState::INSIDE;
 
 }
 
@@ -950,7 +950,7 @@ inline std::vector<Segment<double>> clipLineToPolygonIntersections(const Polygon
         return std::vector<Segment<double>>();
     }
 
-    std::cout << "CHECKING SEGMENTS INSIDE \n";
+    // std::cout << "CHECKING SEGMENTS INSIDE \n";
 
     for (size_t i = 0 ; i + 1 < intersections_.size() ; i++) {
 
@@ -1423,6 +1423,16 @@ inline std::vector<double> polygonSegmentAngles(const Polygon<double>& polygon) 
         // unique with an epsilon tolerance
         double eps_ = 1e-10;
         return std::abs(a-b)< eps_;
+        /*
+            Limitation of the std::unique with eps_ :
+            Suppose varepsilon=10^{-10}, and you have three sorted angles:
+            - a=0
+            - b=0.75eps
+            - c=1.5eps
+            Here, a is close enough to b, and b is close enough to c, but a is not close enough to c.
+            An equivalence relation must be transitive, and the predicate you pass to std::unique() is therefore not strictly an equivalence relation.
+        
+        */
     })), angles_.end());
 
     /*

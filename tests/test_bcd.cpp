@@ -1,8 +1,11 @@
+#include "cleaner/boustrophedon_coverage_generator.hpp"
 #include "cleaner/geometry.hpp"
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/rasterized_image.hpp"
 #include "cleaner/boustrophedon_decomposer.hpp"
 #include "cleaner/depth_first_traversal.hpp"
+#include "cleaner/visibility_graph.hpp"
+#include "cleaner/holonomic_polygon_transtion_planner.hpp"
 int main(int argc , char* argv[]){
     RasterizedImage image_ ("../maps/map.png",0.05 , Point<double>{0.0,0.0});
 
@@ -32,6 +35,32 @@ int main(int argc , char* argv[]){
     ////////////////////////////////DFS//////////////////////////////////
     DepthFirstTraversal dfs;
     dfs.compute(decomposer_.getGraph(),  0);
+    /////////////////////////////// Coverage Planning //////////////////
+    VisibilityGraphCache graph_cache_;
+    HolonomicPolygonTransitionPlanner holonomic_transtion_planner_(graph_cache_);
+    BoustrophedonCoverageGenerator coverage_generator_(holonomic_transtion_planner_);
+    // TODO: Verify and standardize coordinate units before finalizing coverage planning.
+    //
+    // The current BCD polygons and coverage geometry use pixel-like coordinates.
+    // RasterizedImage is initialized with a resolution of 0.05 m/pixel, but this
+    // does not automatically mean that BCD polygons or coverage distances are in meters.
+    //
+    // Currently, max_lane_spacing = 10.0 is interpreted in the same units as the
+    // polygon coordinates. If those coordinates are pixels, this corresponds to
+    // 10 pixels = 0.5 m at a resolution of 0.05 m/pixel.
+    //
+    // Before finalizing the planner:
+    // 1. Verify the coordinate transformations between image, grid, and world frames.
+    // 2. Decide whether coverage geometry will use pixels or world coordinates (meters).
+    // 3. Express the robot's effective cleaning width and lane spacing in consistent units.
+    // 4. Ensure reported path lengths use the intended units.
+    // 5. Confirm that 0.05 m/pixel represents the actual physical map scale.
+    //
+    // Do not assume that assigning a map resolution automatically converts geometry
+    // coordinates from pixels to meters.
+    auto coverage_candidates = coverage_generator_.compute(decomposer_.getCells(), 10.0);
+    coverage_generator_.showCoverageCandidates( image_.getImage(), coverage_candidates);
+
 
 }
 

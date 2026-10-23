@@ -2,6 +2,19 @@
 
 #include <cstddef>
 
+/*
+    Metric	How to calculate
+    coverage_distance_	Sum lengths of COVERAGE segments
+    intra_cell_transition_distance_	Sum lengths of TRANSITION segments in this cell's traversal
+    inter_cell_transition_distance_	for the global route optimizer	Sum transitions connecting different cells
+    total_distance_	Sum all traversal segment lengths
+    number_of_lanes_	cc.lanes_.size()
+    number_of_turns_, but define carefully	Count changes in travel direction or planned turning maneuvers
+    covered_area_	for coverage evaluation	Geometric union of the area swept by the robot
+    uncovered_area_	for coverage evaluation	Cell area minus covered area
+    overlap_area_	Area covered more than once
+    feasible_	Whether all required coverage and transition constraints are satisfied
+*/
 struct CoverageMetrics
 {
     // -------------------------------------------------
