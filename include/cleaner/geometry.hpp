@@ -1,4 +1,5 @@
 #pragma once
+#include "cleaner/map_geometry.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -1395,12 +1396,15 @@ inline bool isSegmentInsidePolygon(const Segment<double>& segment, const Polygon
 
 
 inline std::vector<double> polygonSegmentAngles(const Polygon<double>& polygon) {
+    if (polygon.points_.size() < 3)
+        throw std::runtime_error("PolygonSegmentAgnels : Polygon size is less than 3! ");
     std::vector<double> angles_;
-
+    double eps_ = 1e-10;
     for (int i = 0 ; i < polygon.points_.size() ; i++) {
         Point<double> A = polygon.points_.at(i);
         Point<double> B = polygon.points_.at((i+1)%polygon.points_.size());
-
+        if (distance(A, B) <= eps_)
+            continue; // Zero Length Edge 
         double angle = std::atan2(B.y_ - A.y_ , B.x_ - A.x_); // radians, [-pi, pi]
         if (angle < 0.0) {
             angle += M_PI;
@@ -1412,6 +1416,8 @@ inline std::vector<double> polygonSegmentAngles(const Polygon<double>& polygon) 
         // Now angle is in [0, pi) for an undirected line orientation.
         angles_.push_back(angle);
     }
+
+    std::sort(angles_.begin(), angles_.end());
     // Deduplicate with a tolerance
     angles_.erase((std::unique(angles_.begin(),angles_.end(),[](double a, double b){
         // unique with an epsilon tolerance
@@ -1419,11 +1425,17 @@ inline std::vector<double> polygonSegmentAngles(const Polygon<double>& polygon) 
         return std::abs(a-b)< eps_;
     })), angles_.end());
 
-    return angles_;
-}
+    /*
+        Both first and last angle in the angles_ are in [0,pi) ---> mind that the angles_ is sorted
+        We want to detect whether the first angle is close to 0 and the last angle is close to pi, 
+        since they represent almost the same undirected orientation.
+    */
+    if (!angles_.empty() && angles_.size() > 1 && angles_.front() + M_PI - angles_.back() < eps_) {
+        angles_.pop_back();
+    }
 
-inline std::vector<double> candidateLaneAnglesForPolygon(std::vector<double> angles, const Polygon<double>& polygon) {
-    // if any of the lane directions produces more than two segments then it means one line is producing more than two intersections and its not in accord with polygon's monotonicity! so we discard it
+
+    return angles_;
 }
 
 
@@ -1494,21 +1506,41 @@ inline bool isSweepable( const Polygon<double>& polygon, double angle) {
     auto min_it_ = std::min_element(projections_.begin(), projections_.end());
     auto max_it_ = std::max_element(projections_.begin(), projections_.end());
     
+
+    double eps_ = 1e-10;
+    if (*max_it_ - *min_it_ <= eps_) {
+        return false;
+    }
+
     size_t min_index_ = std::distance(projections_.begin(), min_it_);
     size_t max_index_ = std::distance(projections_.begin(), max_it_);
 
+
     // forward move
-    for (size_t i = min_index_ ; i + 1 < max_index_ ; i++) {
-        if (projections_.at(i) > projections_.at(i+1))
+    for (size_t i = min_index_ ; i != max_index_ ; i = (i+1)%projections_.size()) {
+        const size_t next = (i + 1) % projections_.size();
+        if (projections_[next] < projections_[i] - eps_) {
             return false;
+        }
     }
 
     // Backward move
-    for (size_t i = 0 ; i < projections_.size() ; i++) {
-        
-
+    for (size_t i = min_index_ ; i != max_index_ ; i = (i - 1 + projections_.size())%projections_.size()) {
+        const size_t prev = (i + projections_.size() - 1) % projections_.size();
+        if (projections_[prev] < projections_[i] - eps_) {
+            return false;
+        }
     }
+
+    return true;
 
 
     
+}
+
+inline void filterSweepableLaneAnglesForPolygon(std::vector<double>& angles, const Polygon<double>& polygon) {
+    // if any of the lane directions produces more than two segments then it means one line is producing more than two intersections and its not in accord with polygon's monotonicity! so we discard it
+    angles.erase(std::remove_if(angles.begin(), angles.end(), [&](double& angle){
+        return !isSweepable(polygon, angle);
+    }), angles.end());
 }
