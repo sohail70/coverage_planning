@@ -74,6 +74,24 @@ add_library(coverage_core
     src/visibility_graph.cpp
     src/holonomic_polygon_transtion_planner.cpp
 )
+# first install sudo apt install coinor-libipopt-dev for ipopt and then build casadi from source with ipopt support : https://github.com/zehuilu/Tutorial-on-CasADi-with-CPP
+# cmake .. \
+#     -DCMAKE_BUILD_TYPE=Release \
+#     -DCMAKE_INSTALL_PREFIX=/usr/local \
+#     -DWITH_PYTHON=OFF \
+#     -DWITH_MATLAB=OFF \
+#     -DWITH_OCTAVE=OFF
+#     -DWITH_IPOPT=ON
+#
+# cmake --build . -j"$(nproc)"
+# sudo cmake --install .
+# sudo ldconfig
+
+find_package(casadi CONFIG REQUIRED)
+
+add_library(coverage_control
+    src/control/mpc.cpp
+)
 
 # The nice part is that because this is PUBLIC:
 # target_include_directories(coverage_core
@@ -100,12 +118,27 @@ target_link_libraries(coverage_core
         ${OpenCV_LIBS}
 )
 
+# TO SEE IF THE INCLUDE_DIRS AND _LIBS VARIABLE ARE DEFINED:
+# grep -nE 'add_library|INTERFACE_INCLUDE_DIRECTORIES|casadi_INCLUDE|casadi_LIB' \
+#     /usr/local/lib/cmake/casadi/casadi-config.cmake \
+#     /usr/local/lib/cmake/casadi/casadi-targets.cmake
+target_include_directories(coverage_control
+    PUBLIC 
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(coverage_control 
+    PRIVATE 
+        casadi::casadi
+)
+
 #######################
 
 add_executable(test tests/test.cpp)
 add_executable(test_computational_geometry tests/test_computational_geometry.cpp)
 add_executable(test_image tests/test_image.cpp)
 add_executable(test_bcd tests/test_bcd.cpp)
+add_executable(test_mpc tests/test_mpc.cpp)
 
 
 #find /usr -name "libopencv_*.so*" 2>/dev/null | sort
@@ -118,5 +151,6 @@ add_executable(test_bcd tests/test_bcd.cpp)
 # The rule for the -l form: strip lib prefix and .so suffix. So libopencv_imgproc.so → opencv_imgproc.
 target_link_libraries(test_image PRIVATE coverage_core)
 target_link_libraries(test_bcd PRIVATE coverage_core)
+target_link_libraries(test_mpc PRIVATE coverage_control)
 
 
