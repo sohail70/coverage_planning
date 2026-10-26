@@ -1,7 +1,12 @@
 #include "cleaner/control/mpc.hpp"
+#include "cleaner/control/reference_path.hpp"
 #include <casadi/core/calculus.hpp>
+#include <casadi/core/function.hpp>
 #include <casadi/core/mx.hpp>
 #include <casadi/core/optistack.hpp>
+#include <casadi/core/runtime/casadi_runtime.hpp>
+#include <casadi/core/slice.hpp>
+#include <casadi/core/sparsity_interface.hpp>
 
 ControlCommand MPC::compute(const RobotState& current_state, const ReferencePath2D& reference_path) {
 
@@ -77,4 +82,87 @@ void MPC::test3() {
     std::cout<<"Optimal J : "<<solution.value(J)<<"\n";
 
     
+}
+
+casadi::Function MPC::dynamics() {
+    const double Ts = 0.1;
+    // State Variables
+    casadi::MX x = casadi::MX::sym("x");
+    casadi::MX y = casadi::MX::sym("y");
+    casadi::MX theta = casadi::MX::sym("theta");
+    casadi::MX state = casadi::MX::vertcat({x,y,theta});
+
+    // Control Variables
+    casadi::MX v = casadi::MX::sym("v");
+    casadi::MX w = casadi::MX::sym("w");
+
+    casadi::MX control = casadi::MX::vertcat({v, w});
+
+    // Discrete Time Robot Dynamic
+    casadi::MX next_state =  state + Ts * casadi::MX::vertcat({
+        v * casadi::MX::cos(theta),
+        v * casadi::MX::sin(theta),
+        theta + Ts * w
+    });
+
+    casadi::Function f("f",{state, control}, {next_state});
+    return f; 
+}
+
+
+void MPC::test4() {
+    // how to contruct J for MPC?
+    int N = 3;
+    casadi::Opti opti;
+    casadi::MX x0 = opti.parameter(3);
+    casadi::MX X = x0;
+
+    // Reference state
+    casadi::DM xref = casadi::DM::zeros(3, 1);
+    xref(0) = 1.5;
+    xref(1) = 1.5;
+    xref(2) = -std::acos(-1.0);
+
+
+    casadi::MX U = opti.variable(2,N);
+
+    casadi::Function f = dynamics();
+
+    casadi::DM Q = casadi::DM::zeros(3,3);
+    Q(0,0) = 100;
+    Q(1,1) = 100;
+    Q(2,2) = 1;
+
+    casadi::DM R = casadi::DM::zeros(2,2);
+    R(0,0) = 1.0;
+    R(1,1) = 0.5;
+
+    casadi::DM Qf = casadi::DM::zeros(3, 3);
+    Qf(0, 0) = 100;
+    Qf(1, 1) = 100;
+    Qf(2, 2) = 10;
+
+
+    casadi::MX J = 0;
+    // Lets build J!
+    for (int i = 0 ; i < N ; i++) {
+        casadi::MX U_k = U(casadi::Slice(), i);
+        std::vector<casadi::MX> input{X,U_k};
+        X = f(input)[0];
+        opti.subject_to(X(0) >= -2);
+        opti.subject_to(X(0) <= 2);
+        opti.subject_to(X(1) >= -2);
+        opti.subject_to(X(1) <= 2);
+
+        casadi::MX error = X - xref;
+        J += casadi::MX::mtimes(error.T(), casadi::MX::mtimes(Q, error));
+        J += casadi::MX::mtimes(U_k.T(), casadi::MX::mtimes(R, U_k));
+    }
+    casadi::MX last_prediction_error = X - xref;
+    J += casadi::MX::mtimes(last_prediction_error.T() , casadi::MX::mtimes(Qf, last_prediction_error) );
+
+
+    
+
+
 }

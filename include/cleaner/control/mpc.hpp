@@ -1,6 +1,7 @@
 #pragma once
 #include "cleaner/control/path_tracking_controller.hpp"
 #include <casadi/casadi.hpp>
+#include <casadi/core/function.hpp>
 
 class MPC : public PathTrackingController {
     public:
@@ -12,6 +13,8 @@ class MPC : public PathTrackingController {
         void test3();
         void test4();
         void test5();
+
+        casadi::Function dynamics();
 
     private:
 };
