@@ -102,7 +102,7 @@ casadi::Function MPC::dynamics() {
     casadi::MX next_state =  state + Ts * casadi::MX::vertcat({
         v * casadi::MX::cos(theta),
         v * casadi::MX::sin(theta),
-        theta + Ts * w
+        w
     });
 
     casadi::Function f("f",{state, control}, {next_state});
@@ -110,59 +110,126 @@ casadi::Function MPC::dynamics() {
 }
 
 
-void MPC::test4() {
-    // how to contruct J for MPC?
-    int N = 3;
+void MPC::singleShooting() {
+    // Define the prediction horizon and create the optimization problem
+    int N = 20;
     casadi::Opti opti;
+
+    // Current state parameter and initial predicted state
     casadi::MX x0 = opti.parameter(3);
     casadi::MX X = x0;
 
-    // Reference state
+    // Reference state the robot should reach
     casadi::DM xref = casadi::DM::zeros(3, 1);
     xref(0) = 1.5;
     xref(1) = 1.5;
     xref(2) = -std::acos(-1.0);
 
-
+    // Decision variables: linear and angular velocities over N steps
     casadi::MX U = opti.variable(2,N);
 
+    // Create the robot's discrete-time dynamics function
     casadi::Function f = dynamics();
 
+    // State tracking weights: penalize position and heading errors
     casadi::DM Q = casadi::DM::zeros(3,3);
     Q(0,0) = 100;
     Q(1,1) = 100;
     Q(2,2) = 1;
 
+    // Control effort weights: penalize large control inputs
     casadi::DM R = casadi::DM::zeros(2,2);
     R(0,0) = 1.0;
     R(1,1) = 0.5;
 
+    // Terminal state weights: give extra importance to the final prediction
     casadi::DM Qf = casadi::DM::zeros(3, 3);
     Qf(0, 0) = 100;
     Qf(1, 1) = 100;
     Qf(2, 2) = 10;
 
-
+    // Initialize the objective function
     casadi::MX J = 0;
-    // Lets build J!
+
+    // Build the predicted trajectory and accumulate the running cost
     for (int i = 0 ; i < N ; i++) {
+        // Extract the control input for prediction step i
         casadi::MX U_k = U(casadi::Slice(), i);
+
+        // Predict the next state using the current state and control
         std::vector<casadi::MX> input{X,U_k};
         X = f(input)[0];
+
+        // Constrain the predicted position to remain inside the map
         opti.subject_to(X(0) >= -2);
         opti.subject_to(X(0) <= 2);
         opti.subject_to(X(1) >= -2);
         opti.subject_to(X(1) <= 2);
 
+        // Penalize the predicted state error and control effort
         casadi::MX error = X - xref;
         J += casadi::MX::mtimes(error.T(), casadi::MX::mtimes(Q, error));
         J += casadi::MX::mtimes(U_k.T(), casadi::MX::mtimes(R, U_k));
     }
+
+    // Add the terminal cost for the final predicted state
     casadi::MX last_prediction_error = X - xref;
     J += casadi::MX::mtimes(last_prediction_error.T() , casadi::MX::mtimes(Qf, last_prediction_error) );
 
+    // Constrain the linear and angular velocities at every prediction step
+    for (int i = 0 ; i < N ; i++) {
+        opti.subject_to(U(0,i) >= -0.6 );
+        opti.subject_to(U(0,i) <= 0.6 );
+        opti.subject_to(U(1,i) >= -casadi::pi/4);
+        opti.subject_to(U(1,i) <= casadi::pi/4);
+    }
 
-    
+    // Tell IPOPT to minimize the objective subject to the constraints
+    opti.minimize(J);
+    opti.solver("ipopt");
 
+    // Initialize the robot's current state and set the initial parameter value
+    casadi::DM x_current = casadi::DM::zeros(3, 1);
+    opti.set_value(x0, x_current);
 
+    // Initialize the control sequence used as the solver's initial guess
+    casadi::DM U_guess = casadi::DM::zeros(2,N);
+    opti.set_initial(U, U_guess);
+
+    // Run the receding-horizon MPC loop
+    double t = 0;
+    double sim_time = 10.0;
+    double Ts = 0.1;
+    while (t < sim_time) {
+        // Update the current state and warm-start the optimization
+        opti.set_value(x0, x_current);
+        opti.set_initial(U,U_guess);
+
+        // Solve for the optimal sequence of control inputs
+        casadi::OptiSol res = opti.solve();
+        casadi::DM U_opt = res.value(U);
+
+        // Apply only the first control input from the optimized sequence
+        casadi::DM u_apply = U_opt(casadi::Slice(), 0);
+
+        // Simulate one time step using the robot dynamics
+        std::vector<casadi::DM> input{x_current, u_apply};
+        x_current = f(input)[0];
+
+        // Shift the solution by one and use it as a warm start
+        for (int i = 0 ; i + 1 < N ; i++) {
+            U_guess(0,i) = U_opt(0,i+1);
+            U_guess(1,i) = U_opt(1,i+1);
+        }
+
+        // Initialize the last column because no previous prediction is available
+        U_guess(0, N-1) = 0;
+        U_guess(1, N-1) = 0;
+
+        // Advance simulation time by one sampling period
+        t += Ts;
+    }
+
+    // Print the final simulated robot state
+    std::cout << "Final state:\n" << x_current << std::endl;
 }
