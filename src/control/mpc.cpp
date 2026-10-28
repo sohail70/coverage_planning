@@ -1,5 +1,7 @@
 #include "cleaner/control/mpc.hpp"
 #include "cleaner/control/reference_path.hpp"
+#include "cleaner/geometry.hpp"
+#include "cleaner/geometry_types.hpp"
 #include <casadi/core/calculus.hpp>
 #include <casadi/core/dm_fwd.hpp>
 #include <casadi/core/function.hpp>
@@ -8,6 +10,7 @@
 #include <casadi/core/runtime/casadi_runtime.hpp>
 #include <casadi/core/slice.hpp>
 #include <casadi/core/sparsity_interface.hpp>
+#include <cmath>
 
 ControlCommand MPC::compute(const RobotState& current_state, const ReferencePath2D& reference_path) {
 
@@ -284,11 +287,22 @@ void MPC::multipleShooting() {
         opti.subject_to(U(1,i) >= -casadi::pi/4);
         opti.subject_to(U(1,i) <= casadi::pi/4);
     }
+    // terminal state bounds since X has N+1 dimension
+    opti.subject_to(X(0,N) >= -2);
+    opti.subject_to(X(0,N) <=  2);
+    opti.subject_to(X(1,N) >= -2);
+    opti.subject_to(X(1,N) <=  2);
+
+
+
 
     // eqaulity constraint --> dynamics!
     casadi::Function f = dynamics();
     casadi::MX x0 = opti.parameter(3,1);
     casadi::DM x_current = casadi::DM::zeros(3,1);
+    x_current(0) = 0.3;
+    x_current(1) = 0.2;
+    x_current(2) = 0.3;
     opti.set_value(x0, x_current);
     opti.subject_to(X(casadi::Slice(),0) == x0);
     for (int i = 0 ; i < N; i++) {
@@ -327,6 +341,156 @@ void MPC::multipleShooting() {
         U_guess(0, N-1) = 0;
         U_guess(1, N-1) = 0;
 
+        t += Ts;
+    }
+
+
+    std::cout << "Final state:\n" << x_current << std::endl;
+
+}
+
+
+
+
+void MPC::multipleShootingTracking() {
+    casadi::Opti opti;
+    int N = 20;
+    casadi::MX U = opti.variable(2,N);
+    casadi::MX X = opti.variable(3,N+1);
+
+
+    Segment<double> s1 {Point<double>{0.0,0.0}, Point<double>{5.0,1.0}};
+
+    double theta_ref = atan2(s1.end_.y_ - s1.start_.y_ , s1.end_.x_ - s1.start_.x_);
+
+    double vref = 0.3;
+    double length = distance(s1.start_, s1.end_);
+    double Ts = 0.1;
+    int count = static_cast<int>( std::ceil(length / (vref * Ts)));
+    
+    casadi::DM xref = casadi::DM::zeros(3, count+1) ;
+    xref(0,0) = s1.start_.x_;
+    xref(1,0) = s1.start_.y_;
+    xref(2,0) = theta_ref;
+    for (int i = 0 ; i < count ; i++) {
+        xref(0,i+1) = xref(0,i) + vref*cos(theta_ref)*Ts; 
+        xref(1,i+1) = xref(1,i) + vref*sin(theta_ref)*Ts; 
+        xref(2,i+1) = theta_ref;
+    }
+    // in case the above "count" variable creats any indexing problems due to int round up!
+    xref(0,count) = s1.end_.x_;
+    xref(1,count) = s1.end_.y_;
+
+
+
+
+
+    casadi::DM Q = casadi::DM::zeros(3,3);
+    Q(0,0) = 100;
+    Q(1,1) = 100;
+    Q(2,2) = 1;
+    casadi::DM Qf = casadi::DM::zeros(3,3);
+    Qf(0,0) = 100;
+    Qf(1,1) = 100;
+    Qf(2,2) = 10;
+
+    casadi::DM R = casadi::DM::zeros(2,2);
+    R(0,0) = 1;
+    R(1,1) = 0.5;
+
+
+    casadi::MX J = 0;
+    casadi::MX xref_moving_window_symbolic = opti.parameter(3, N+1);
+    // construct J 
+    for (int i = 0 ; i < N ; i++) {
+        // casadi::MX error = X(casadi::Slice(),i) - xref(casadi::Slice(), start_idx + i);
+        casadi::MX error = X(casadi::Slice(),i) - xref_moving_window_symbolic(casadi::Slice(), i);
+        J+= casadi::MX::mtimes(error.T(), casadi::MX::mtimes(Q, error));
+        casadi::MX U_k = U(casadi::Slice(), i);
+        J+= casadi::MX::mtimes(U_k.T(), casadi::MX::mtimes(R, U_k));
+    }
+    // casadi::MX error = X(casadi::Slice(),N) - xref(casadi::Slice(), start_idx + N); // final state
+    casadi::MX error = X(casadi::Slice(),N) - xref_moving_window_symbolic(casadi::Slice(), N); // final state
+    J+= casadi::MX::mtimes(error.T(), casadi::MX::mtimes(Qf, error));
+
+    // inequality constraint
+    for (int i = 0 ; i < N ; i++) {
+        opti.subject_to(X(0,i) >= -20);
+        opti.subject_to(X(0,i) <= 20);
+        opti.subject_to(X(1,i) >= -20);
+        opti.subject_to(X(1,i) <= 20);
+
+        opti.subject_to(U(0,i) >= -0.6);
+        opti.subject_to(U(0,i) <= 0.6);
+        opti.subject_to(U(1,i) >= -casadi::pi/4);
+        opti.subject_to(U(1,i) <= casadi::pi/4);
+    }
+    // terminal state bounds since X has N+1 dimension
+    opti.subject_to(X(0,N) >= -20);
+    opti.subject_to(X(0,N) <=  20);
+    opti.subject_to(X(1,N) >= -20);
+    opti.subject_to(X(1,N) <=  20);
+
+
+    // eqaulity constraint --> dynamics!
+    casadi::Function f = dynamics();
+    casadi::MX x0 = opti.parameter(3,1);
+    casadi::DM x_current = casadi::DM::zeros(3,1);
+    opti.set_value(x0, x_current);
+    opti.subject_to(X(casadi::Slice(),0) == x0);
+    for (int i = 0 ; i < N; i++) {
+        casadi::MX U_k = U(casadi::Slice(), i);
+        std::vector<casadi::MX> input{X(casadi::Slice(), i), U_k};
+        opti.subject_to(X(casadi::Slice(), i+1) == f(input)[0] );
+    }
+
+
+    opti.minimize(J);
+    opti.solver("ipopt");
+
+    double sim_time = 20.0;
+    double t = 0.0;
+
+
+
+    casadi::DM U_guess = casadi::DM::zeros(2,N);
+    opti.set_initial(U, U_guess);
+
+    int start_idx = 0;
+    casadi::DM xref_window = casadi::DM::zeros(3, N+1); // for filling using the caluclated points of the trajectory which has count+1 columns
+
+    while (t < sim_time) {
+        opti.set_value(x0 , x_current);
+        opti.set_initial(U, U_guess);
+        for (int i = 0 ; i < N+1 ; i++) {
+            if (start_idx+i <= count){
+                xref_window(0,i) = xref(0,start_idx+i);
+                xref_window(1,i) = xref(1, start_idx+i);
+                xref_window(2,i) = xref(2, start_idx+i);
+            }
+            else {
+                xref_window(0,i) = xref(0,count);
+                xref_window(1,i) = xref(1, count);
+                xref_window(2,i) = xref(2,count);
+            }
+        }
+        opti.set_value(xref_moving_window_symbolic, xref_window);
+
+        casadi::OptiSol sol =  opti.solve();
+        casadi::DM U_opt = sol.value(U);
+        casadi::DM u_apply = U_opt(casadi::Slice() , 0) ;
+        std::vector<casadi::DM> input{x_current, u_apply};
+        x_current = f(input)[0];
+
+        // using U_opt (except the first one which we used for u_apply, as a guess for the next optimization cycle)
+        for (int i = 0 ; i < N-1 ; i++) {
+            U_guess(0,i) = U_opt(0,i+1);
+            U_guess(1,i) = U_opt(1,i+1);
+        }
+        U_guess(0, N-1) = 0;
+        U_guess(1, N-1) = 0;
+
+        start_idx = std::min(start_idx + 1, count);
         t += Ts;
     }
 

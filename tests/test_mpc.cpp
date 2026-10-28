@@ -6,7 +6,7 @@
 int main(int argc, char* argv[]) {
     std::cout<<"HELLO WORLD \n";
     MPC mpc_;
-    mpc_.multipleShooting();
+    mpc_.multipleShootingTracking();
 
     // casadi::DM current_state_ =  casadi::DM::vertcat({0,0,0});
     // casadi::DM current_control_ =  casadi::DM::vertcat({1,0});
