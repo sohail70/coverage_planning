@@ -12,7 +12,7 @@ class MPC : public PathTrackingController {
         void test2();
         void test3();
         void singleShooting();
-        void test5();
+        void multipleShooting();
 
         casadi::Function dynamics();
 

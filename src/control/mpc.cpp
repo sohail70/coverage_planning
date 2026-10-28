@@ -1,6 +1,7 @@
 #include "cleaner/control/mpc.hpp"
 #include "cleaner/control/reference_path.hpp"
 #include <casadi/core/calculus.hpp>
+#include <casadi/core/dm_fwd.hpp>
 #include <casadi/core/function.hpp>
 #include <casadi/core/mx.hpp>
 #include <casadi/core/optistack.hpp>
@@ -232,4 +233,104 @@ void MPC::singleShooting() {
 
     // Print the final simulated robot state
     std::cout << "Final state:\n" << x_current << std::endl;
+}
+
+
+void MPC::multipleShooting() {
+    casadi::Opti opti;
+    int N = 20;
+    casadi::MX U = opti.variable(2,N);
+    casadi::MX X = opti.variable(3,N+1);
+    casadi::DM xref = casadi::DM::zeros(3,1) ;
+    xref(0) = 1.5;
+    xref(1) = 1.5;
+    xref(2) = casadi::pi/4;
+
+
+    casadi::DM Q = casadi::DM::zeros(3,3);
+    Q(0,0) = 100;
+    Q(1,1) = 100;
+    Q(2,2) = 1;
+    casadi::DM Qf = casadi::DM::zeros(3,3);
+    Qf(0,0) = 100;
+    Qf(1,1) = 100;
+    Qf(2,2) = 10;
+
+    casadi::DM R = casadi::DM::zeros(2,2);
+    R(0,0) = 1;
+    R(1,1) = 0.5;
+
+
+    casadi::MX J = 0;
+    // construct J 
+    for (int i = 0 ; i < N ; i++) {
+        casadi::MX error = X(casadi::Slice(),i) - xref;
+        J+= casadi::MX::mtimes(error.T(), casadi::MX::mtimes(Q, error));
+        casadi::MX U_k = U(casadi::Slice(), i);
+        J+= casadi::MX::mtimes(U_k.T(), casadi::MX::mtimes(R, U_k));
+    }
+    casadi::MX error = X(casadi::Slice(),N) - xref; // final state
+    J+= casadi::MX::mtimes(error.T(), casadi::MX::mtimes(Qf, error));
+
+    // inequality constraint
+    for (int i = 0 ; i < N ; i++) {
+        opti.subject_to(X(0,i) >= -2);
+        opti.subject_to(X(0,i) <= 2);
+        opti.subject_to(X(1,i) >= -2);
+        opti.subject_to(X(1,i) <= 2);
+
+        opti.subject_to(U(0,i) >= -0.6);
+        opti.subject_to(U(0,i) <= 0.6);
+        opti.subject_to(U(1,i) >= -casadi::pi/4);
+        opti.subject_to(U(1,i) <= casadi::pi/4);
+    }
+
+    // eqaulity constraint --> dynamics!
+    casadi::Function f = dynamics();
+    casadi::MX x0 = opti.parameter(3,1);
+    casadi::DM x_current = casadi::DM::zeros(3,1);
+    opti.set_value(x0, x_current);
+    opti.subject_to(X(casadi::Slice(),0) == x0);
+    for (int i = 0 ; i < N; i++) {
+        casadi::MX U_k = U(casadi::Slice(), i);
+        std::vector<casadi::MX> input{X(casadi::Slice(), i), U_k};
+        opti.subject_to(X(casadi::Slice(), i+1) == f(input)[0] );
+    }
+
+    opti.minimize(J);
+    opti.solver("ipopt");
+
+    double sim_time = 10.0;
+    double t = 0.0;
+    double Ts = 0.1;
+
+
+
+    casadi::DM U_guess = casadi::DM::zeros(2,N);
+    opti.set_initial(U, U_guess);
+
+    while (t < sim_time) {
+        opti.set_value(x0 , x_current);
+        opti.set_initial(U, U_guess);
+
+        casadi::OptiSol sol =  opti.solve();
+        casadi::DM U_opt = sol.value(U);
+        casadi::DM u_apply = U_opt(casadi::Slice() , 0) ;
+        std::vector<casadi::DM> input{x_current, u_apply};
+        x_current = f(input)[0];
+
+        // using U_opt (except the first one which we used for u_apply, as a guess for the next optimization cycle)
+        for (int i = 0 ; i < N-1 ; i++) {
+            U_guess(0,i) = U_opt(0,i+1);
+            U_guess(1,i) = U_opt(1,i+1);
+        }
+        U_guess(0, N-1) = 0;
+        U_guess(1, N-1) = 0;
+
+        t += Ts;
+    }
+
+
+    std::cout << "Final state:\n" << x_current << std::endl;
+
 }
