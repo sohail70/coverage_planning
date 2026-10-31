@@ -1,5 +1,7 @@
 #pragma once
 #include "cleaner/geometry_types.hpp"
+#include <algorithm>
+#include <stdexcept>
 
 /*
     A cross/dot product is between vectors and vectors dont have specific position but are just directions!
@@ -26,6 +28,125 @@ inline double distance(const Point<double>& A , const Point<double>& B) {
     return std::sqrt(r.x_*r.x_ + r.y_*r.y_);
 }
 
+/*
+    mind that we are finding the point distance to a segment not line
+    Computes the minimum Euclidean distance from a point to a finite line segment.
+    Projects the point onto the segment and clamps the projection parameter t to [0, 1]
+    so that the closest point always lies between the segment endpoints.
+
+
+    IMPORTANT:
+    Point-to-line distance assumes an infinite line.
+    Point-to-segment distance is restricted to the finite segment.
+    Both calculate the minimum Euclidean distance, but their
+    closest points may be different.
+*/
+inline double distancePointToSegment(const Point<double>& p, const Segment<double>& segment) {
+    Point<double> A = segment.start_;
+    Point<double> B = segment.end_;
+    Point<double> r = B - A;
+    double eps_ = 1e-10;
+    if (dotProduct2D(r, r) <= eps_ * eps_) {
+        throw std::runtime_error("distancePointToSegment : segment length is zero");
+    }
+    double t = dotProduct2D(p - A, r)/dotProduct2D(r, r);
+
+    t = std::clamp(t,0.0,1.0);
+    Point<double> projection_ = A + r*t;
+    return distance(projection_, p);
+}
+
+/*
+    Point-to-line distance (infinite line represented by unit normal n and offset c).
+
+    Line equation: P.dot(n) = c
+    c = A.dot(n), where A is any point on the line.
+
+    Q.dot(n) gives the point's coordinate along the normal direction,
+    measured from the origin. However, the line itself may not pass
+    through the origin, so we subtract c to obtain the signed distance.
+
+    Signed distance:   d = Q.dot(n) - c
+    Euclidean distance: abs(d)
+
+    Note: n must be normalized (unit length).
+    If the line passes through the origin, c = 0.
+
+
+    use the example of finding the dot product of A(2,3) onto direction (1,0) and (0,1) and then use the example of line y=3
+    to understand why we subtract c
+*/
+inline double distancePointToLine(const Point<double>& p, const Point<double> unit_normal, double c) {
+    double eps_ = 1e-10;
+    if (std::abs(dotProduct2D(unit_normal, unit_normal) - 1.0) >= eps_)
+        throw  std::runtime_error("distancePointToLine : unit normal length is not 1");
+    return std::abs(dotProduct2D(p, unit_normal) - c);
+}
+/*
+    Signed distance: d = Q.dot(n) - c
+    Positive/negative values indicate opposite sides of the line,
+    depending on the normal's orientation.
+*/
+inline double signedDistancePointToLine( const Point<double>& p, const Point<double>& unit_normal, double c) {
+    double eps_ = 1e-10;
+    if (std::abs(dotProduct2D(unit_normal, unit_normal) - 1.0) >= eps_)
+        throw  std::runtime_error("signedDistancePointToLine : unit normal length is not 1");
+    return dotProduct2D(p, unit_normal) - c;
+}
+
+
+// Computes the minimum Euclidean distance from a point to a polyline.
+// A polyline consists of consecutive line segments connecting its waypoints.
+inline double distancePointToPolyline( const Point<double>& p, const std::vector<Point<double>>& path) {
+    if (path.empty())
+        throw std::runtime_error("distancePointToPolyline: empty path");
+
+    if (path.size() == 1)
+        return distance(p, path.front());
+
+    double min_distance = std::numeric_limits<double>::max();
+    constexpr double eps = 1e-10;
+
+    for (size_t i = 0; i < path.size() - 1; ++i)
+    {
+        Point<double> r = path[i + 1] - path[i];
+
+        // Skip degenerate segments (duplicate consecutive waypoints).
+        if (dotProduct2D(r, r) <= eps * eps)
+            continue;
+
+        double d = distancePointToSegment(
+            p, Segment<double>{path[i], path[i + 1]});
+
+        min_distance = std::min(min_distance, d);
+    }
+
+    // All segments were degenerate.
+    if (min_distance == std::numeric_limits<double>::max())
+        return distance(p, path.front());
+
+    return min_distance;
+}
+
+inline Point<double> closestPointOnSegment( const Point<double>& p, const Segment<double>& segment) {
+    const Point<double>& A = segment.start_;
+    const Point<double>& B = segment.end_;
+
+    Point<double> r = B - A;
+    double r_squared = dotProduct2D(r, r);
+
+    constexpr double eps = 1e-10;
+
+    if (r_squared <= eps * eps) {
+        throw std::runtime_error(
+            "closestPointOnSegment: segment has zero length");
+    }
+
+    double t = dotProduct2D(p - A, r) / r_squared;
+    t = std::clamp(t, 0.0, 1.0);
+
+    return A + r * t;
+}
 
 
 /*

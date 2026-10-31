@@ -125,11 +125,13 @@ target_link_libraries(coverage_core
 target_include_directories(coverage_control
     PUBLIC 
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${OpenCV_INCLUDE_DIRS}
 )
 
 target_link_libraries(coverage_control 
     PRIVATE 
         casadi::casadi
+        ${OpenCV_LIBS}
 )
 
 #######################
