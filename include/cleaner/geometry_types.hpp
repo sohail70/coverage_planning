@@ -105,3 +105,9 @@ enum class Orientation {
     CCW,
     COLLINEAR,
 };
+
+
+struct Pose2D {
+    Point<double> position_;
+    double heading_;
+};

@@ -73,6 +73,7 @@ add_library(coverage_core
     src/boustrophedon_coverage_generator.cpp
     src/visibility_graph.cpp
     src/holonomic_polygon_transtion_planner.cpp
+    src/global_coverage_planner.cpp
 )
 # first install sudo apt install coinor-libipopt-dev for ipopt and then build casadi from source with ipopt support : https://github.com/zehuilu/Tutorial-on-CasADi-with-CPP
 # cmake .. \
@@ -90,6 +91,8 @@ add_library(coverage_core
 find_package(casadi CONFIG REQUIRED)
 
 add_library(coverage_control
+    src/control/execution_manager.cpp
+    src/control/reference_builder.cpp
     src/control/mpc.cpp
 )
 
@@ -141,6 +144,7 @@ add_executable(test_computational_geometry tests/test_computational_geometry.cpp
 add_executable(test_image tests/test_image.cpp)
 add_executable(test_bcd tests/test_bcd.cpp)
 add_executable(test_mpc tests/test_mpc.cpp)
+add_executable(test_full tests/test_full.cpp)
 
 
 #find /usr -name "libopencv_*.so*" 2>/dev/null | sort
@@ -155,4 +159,5 @@ target_link_libraries(test_image PRIVATE coverage_core)
 target_link_libraries(test_bcd PRIVATE coverage_core)
 target_link_libraries(test_mpc PRIVATE coverage_control)
 
+target_link_libraries(test_full PRIVATE coverage_core coverage_control)
 

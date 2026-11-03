@@ -1,5 +1,7 @@
 #include "cleaner/boustrophedon_coverage_generator.hpp"
+#include "cleaner/global_coverage_planner.hpp"
 #include "cleaner/geometry.hpp"
+#include "cleaner/global_coverage_planner.hpp"
 #include "cleaner/map_geometry.hpp"
 #include "cleaner/rasterized_image.hpp"
 #include "cleaner/boustrophedon_decomposer.hpp"
@@ -61,7 +63,12 @@ int main(int argc , char* argv[]){
     auto coverage_candidates = coverage_generator_.compute(decomposer_.getCells(), 10.0);
     coverage_generator_.showCoverageCandidates( image_.getImage(), coverage_candidates);
 
-
+    // Optimization : its not implmeneted yet!
+    GlobalCoveragePlanner planner(
+        [](const Segment<double>&) {
+            return true;
+        }
+    );
 }
 
 

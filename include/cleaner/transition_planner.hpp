@@ -6,10 +6,7 @@
 #include "cleaner/geometry.hpp"
 #include "cleaner/planning_types.hpp"
 
-struct Pose2D {
-    Point<double> position_;
-    double heading_;
-};
+
 
 struct TransitionPath {
     std::vector<Point<double>> waypoints_;
