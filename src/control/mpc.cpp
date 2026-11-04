@@ -7,25 +7,17 @@
 #include <casadi/core/dm_fwd.hpp>
 #include <casadi/core/function.hpp>
 #include <casadi/core/generic_expression.hpp>
+#include <casadi/core/generic_type.hpp>
 #include <casadi/core/mx.hpp>
 #include <casadi/core/optistack.hpp>
 #include <casadi/core/runtime/casadi_runtime.hpp>
 #include <casadi/core/slice.hpp>
 #include <casadi/core/sparsity_interface.hpp>
+#include <chrono>
 #include <cmath>
+#include <stdexcept>
+#include <system_error>
 
-/*
-    construct the CasADi optimization problem once, then update its parameters whenever the robot 
-    state or reference changes.
-*/
-
-ControlResult MPC::compute(const RobotState& current_state, const ReferencePath2D& local_reference_path) {
-
-}
-
-void MPC::reset() {
-
-}
 
 
 void MPC::test1() {
@@ -661,10 +653,12 @@ void MPC::multipleShootingPathTracking() {
         casadi::MX error_ct = X(0,i)*normal.x_ + X(1,i)*normal.y_ - c;
         J+= q_ct * error_ct * error_ct;
 
-        // shortest angular difference instead of simple "X(2,i) - theta_ref"
-        casadi::MX angle_error = X(2,i) - theta_ref;
-        casadi::MX error_heading = casadi::MX::atan2( casadi::MX::sin(angle_error), casadi::MX::cos(angle_error));
-        J+= q_heading * error_heading * error_heading;
+        // // shortest angular difference instead of simple "X(2,i) - theta_ref"
+        // casadi::MX angle_error = X(2,i) - theta_ref;
+        // casadi::MX error_heading = casadi::MX::atan2( casadi::MX::sin(angle_error), casadi::MX::cos(angle_error));
+        // J+= q_heading * error_heading * error_heading;
+        casadi::MX angle_diff = X_(2,i) - theta_ref;
+        J_ += 2.0 * config_.q_heading * (1.0 - casadi::MX::cos(angle_diff));
 
 
         casadi::MX U_k = U(casadi::Slice(), i);
@@ -674,8 +668,22 @@ void MPC::multipleShootingPathTracking() {
         // Along-path position [m]
         casadi::MX s_k = direction.x_ * (X(0,i) - s1.start_.x_) + direction.y_ * (X(1,i) - s1.start_.y_);
 
-        // Remaining distance [m]
-        casadi::MX remaining = casadi::MX::fmax(0.0, length - s_k);
+        // // Remaining distance [m]
+        // casadi::MX remaining = casadi::MX::fmax(0.0, length - s_k);
+
+        // This smooths the transition when the predicted robot position reaches the segment endpoint.
+        casadi::MX raw_remaining = length - s_k;
+
+        constexpr double smooth_eps = 1e-3;
+
+        casadi::MX remaining = 0.5 * (
+            raw_remaining +
+            casadi::MX::sqrt(
+                raw_remaining * raw_remaining + smooth_eps * smooth_eps
+            )
+        );
+
+
 
         // Desired speed based on stopping distance [m/s]
         double eps = 1e-6;
@@ -701,10 +709,13 @@ void MPC::multipleShootingPathTracking() {
 
     casadi::MX error_ct = X(0,N) * normal.x_ + X(1,N) * normal.y_  - c;
 
-    casadi::MX angle_error = X(2,N) - theta_ref;
-    casadi::MX error_heading = casadi::MX::atan2( casadi::MX::sin(angle_error), casadi::MX::cos(angle_error));
+    // casadi::MX angle_error = X(2,N) - theta_ref;
+    // casadi::MX error_heading = casadi::MX::atan2( casadi::MX::sin(angle_error), casadi::MX::cos(angle_error));
+    // J+= q_ct * error_ct * error_ct + q_heading * error_heading * error_heading;
 
-    J+= q_ct * error_ct * error_ct + q_heading * error_heading * error_heading;
+    casadi::MX angle_error = X_(2,config_.N) - theta_ref;
+    J_ += config_.q_ct * error_ct * error_ct + 2.0 * config_.q_heading * (1.0 - casadi::MX::cos(angle_error));
+    
 
     // inequality constraint
     for (int i = 0 ; i < N ; i++) {
@@ -903,10 +914,68 @@ void MPC::visualizeRobot(
     cv::waitKey(1);
 }
 
-/////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+    construct the CasADi optimization problem once, then update its parameters whenever the robot 
+    state or reference changes.
+*/
+
+MPC::MPC() {
+    buildProblem();
+    buildObjective();
+    buildConstraints();
+
+    casadi::Dict options;
+    options["expand"] = true; //Converts the problem from MX to SX, which evaluates faster
+    options["print_time"] = false; //Stops CasADi printing timing tables
+    options["ipopt.print_level"] = 0; //Stops IPOPT printing each iteration
+    options["ipopt.sb"] = "yes"; //Hides the IPOPT startup banner
+    opti_.solver("ipopt", options);
+
+    reset();
+}
+
+// Call Every 50 ms
+ControlResult MPC::compute(const RobotState& current_state, const ReferencePath2D& local_reference_path) {
+    try {
+        updateParameters(current_state, local_reference_path);
+
+        // Initialize the warm start from the measured robot state
+        // only if no previous successful solution is available.
+        if (!warm_start_valid_) {
+            casadi::DM x0 = casadi::DM::zeros(3,1);
+            x0(0) = current_state.pose_.position_.x_;
+            x0(1) = current_state.pose_.position_.y_;
+            x0(2) = current_state.pose_.heading_;
+
+            X_guess_ = casadi::DM::repmat(x0, 1, config_.N+1);
+            U_guess_ = casadi::DM::zeros(2, config_.N);
+        }
+
+        ControlResult result = solve();
+
+        warm_start_valid_ = (result.status_ == ControlStatus::SUCCESS);
+
+        return result;
+    }
+    catch (const std::exception& e) {
+        warm_start_valid_ = false;
+
+        ControlResult result;
+        result.status_ = ControlStatus::FAILURE;
+        result.command_.header_.frame_id_ = "base_link";
+        result.command_.header_.stamp_ = std::chrono::system_clock::now();
+        result.command_.twist_.linear_x_ = 0.0;
+        result.command_.twist_.linear_y_ = 0.0;
+        result.command_.twist_.angular_z_ = 0.0;
+
+        return result;
+    }
+}
 
 
-casadi::Function MPC::motion() {
+casadi::Function MPC::motionModel() {
     const double Ts = config_.Ts;
     // State Variables
     casadi::MX x = casadi::MX::sym("x");
@@ -947,12 +1016,58 @@ void MPC::buildProblem() {
     params_.x0        = opti_.parameter(3,1);
     params_.start     = opti_.parameter(2,1);
     params_.direction = opti_.parameter(2,1);
-    params_.length    = opti_.parameter();
-    params_.vmax      = opti_.parameter();
+    params_.vref    = opti_.parameter(1,config_.N);
+    params_.theta_ref      = opti_.parameter(1,config_.N+1);
+
 }
 
 
 
+/*
+    WHY THE SPEED AND HEADING TARGETS ARE COMPUTED OUTSIDE THE SOLVER
+    (see multipleShootingPathTracking() above for the first version of this cost)
+
+    The first version computed the target speed inside the cost:
+
+        v_ref = min(vmax, sqrt(2 * a_brake * max(0, length - s)))
+
+    That made the robot freeze near the end of a segment:
+        - Close to the endpoint the sqrt curve is almost vertical (slope = a_brake / sqrt(eps),
+          which is 100 for a_brake = 0.1 and eps = 1e-6), and past the endpoint fmax makes it
+          completely flat. The solver follows slopes, so it failed with Restoration_Failed as
+          soon as the prediction reached that point, about a_brake * T^2 / 2 metres before the
+          end (T = N * Ts is the horizon).
+        - A failed solve commands v = 0, so the state does not change, and the next solve fails
+          in exactly the same way. The robot never recovers.
+    A larger eps only softens the curve. Here the solver receives the targets as plain numbers,
+    filled in by updateParameters(), so the steep curve is not part of the problem at all.
+
+    WHY THE ROBOT STOPPED TRACKING THE LINE AFTER A TURN
+    The robot used to switch segment 0.15 m before the corner, so it started turning early and
+    joined the next line about 0.13 m to the side. The fix is in three places:
+        - ExecutionManager: arrive at 0.03 m, measured along the segment only.
+        - updateParameters(): keep a small creep speed until arrival, otherwise the target
+          speed fades to zero and the robot never gets there.
+        - updateParameters(): while the robot is not facing the segment, the target speed is 0
+          and the target heading turns gradually (stop and rotate).
+
+    OTHER CHANGES TO THE COST
+        - Heading uses 2 * (1 - cos(error)) instead of atan2(sin, cos). Lanes alternate between
+          0 and 180 degrees, which is exactly where the atan2 form jumps.
+        - q_speed tracks v directly. At a 90 degree heading error s_dot does not depend on v,
+          so the progress term alone cannot control it.
+        - r_v is gone because it pulled the robot below its target speed.
+        - The backward penalty is replaced by the hard limit v >= 0 in buildConstraints().
+        - r_du penalizes changes in control between stages to smooth the commands.
+
+    WHY THE HORIZON DOES NOT SEE THE NEXT SEGMENT
+    Tested on the first 12 segments of map.png (max cross-track error):
+        tolerance 0.15, next segment visible : 0.128 m
+        tolerance 0.03, next segment visible : 0.026 m
+        tolerance 0.03, one segment only     : 0.025 m
+    A robot that stops at every corner has nothing to prepare for, so a window of segments does
+    not help. It is worth adding if the robot ever drives through corners without stopping.
+*/
 void MPC::buildObjective() {
     J_ = 0;
 
@@ -963,59 +1078,82 @@ void MPC::buildObjective() {
     // Line equation: normal.x * x + normal.y * y = c
     casadi::MX c = params_.start(0) * normal_x + params_.start(1) * normal_y;
 
-    // Reference heading: angle of the segment direction in the world frame.
-    casadi::MX theta_ref = casadi::MX::atan2(params_.direction(1), params_.direction(0));
-
     for (int i = 0 ; i < config_.N ; i++) {
         // Cross-track error: signed perpendicular distance from the predicted position to the infinite line supporting the segment.
         casadi::MX e_ct = X_(0,i)*normal_x + X_(1,i)*normal_y - c;
         J_ += config_.q_ct * e_ct * e_ct;
 
-        // Heading error: shortest angular difference between the predicted robot heading and the segment direction.
-        casadi::MX angle_diff = X_(2,i) - theta_ref;
-        casadi::MX e_heading = casadi::MX::atan2(casadi::MX::sin(angle_diff), casadi::MX::cos(angle_diff));
-        J_ += config_.q_heading * e_heading * e_heading;
+        // OLD (wrong): one fixed heading target for the whole horizon, and an atan2 error.
+        //     The robot was asked to face the segment at every stage, with no gradual turn.
+        //     atan2(sin, cos) also jumps at 180 degrees, and our lanes alternate between 0 and 180.
+        //
+        //     casadi::MX theta_ref = casadi::MX::atan2(params_.direction(1), params_.direction(0));
+        //     casadi::MX angle_diff = X_(2,i) - theta_ref;
+        //     casadi::MX e_heading = casadi::MX::atan2(casadi::MX::sin(angle_diff), casadi::MX::cos(angle_diff));
+        //     J_ += config_.q_heading * e_heading * e_heading;
 
-        // Control effort: penalize linear and angular velocity according to their weights.
+        // Heading error: smooth around the whole circle, approximately error^2 for small errors.
+        J_ += config_.q_heading * 2.0 * (1.0 - casadi::MX::cos(X_(2,i) - params_.theta_ref(i)));
+
+        // OLD (wrong): r_v pulled the robot below its target speed, because any speed had a cost.
+        //
+        //     J_ += config_.r_v * U_k(0) * U_k(0) + config_.r_w * U_k(1) * U_k(1);
+
+        // Control effort: penalize angular velocity only, the speed is handled by the tracking terms below.
         casadi::MX U_k = U_(casadi::Slice(), i);
-        J_ += config_.r_v * U_k(0) * U_k(0) + config_.r_w * U_k(1) * U_k(1);
+        J_ += config_.r_w * U_k(1) * U_k(1);
 
-        // Along-path position: project the displacement from the segment start to the predicted robot position onto the unit segment direction.
-        // s_k = 0 at the segment start; s_k = segment length at the endpoint.
-        casadi::MX s_k = params_.direction(0) * (X_(0,i) - params_.start(0)) + params_.direction(1) * (X_(1,i) - params_.start(1));
-
-        // Remaining distance along the segment, clamped to zero if the predicted position passes the endpoint.
-        casadi::MX remaining = casadi::MX::fmax(0.0, params_.length - s_k);
-
-        // Desired progress speed: limited by the segment speed limit and the distance needed to brake before the endpoint.
-        // The epsilon avoids a singular square-root derivative near zero remaining distance.
-        constexpr double eps = 1e-6;
-        casadi::MX v_ref_k = casadi::MX::fmin(
-            params_.vmax,
-            casadi::MX::sqrt(2.0 * config_.a_brake * remaining + eps) - std::sqrt(eps)
-        );
+        // OLD (wrong): this is what froze the robot near the end of a segment.
+        //     Inside the solver, sqrt is almost vertical near the endpoint and fmax is flat past it.
+        //     IPOPT failed with Restoration_Failed there, and v = 0 meant every later solve failed too.
+        //     The same formula now runs in plain C++ in updateParameters(), and the solver only sees a number.
+        //
+        //     casadi::MX s_k = params_.direction(0) * (X_(0,i) - params_.start(0)) + params_.direction(1) * (X_(1,i) - params_.start(1));
+        //     casadi::MX remaining = casadi::MX::fmax(0.0, params_.length - s_k);
+        //     constexpr double eps = 1e-6;
+        //     casadi::MX v_ref_k = casadi::MX::fmin(
+        //         params_.vmax,
+        //         casadi::MX::sqrt(2.0 * config_.a_brake * remaining + eps) - std::sqrt(eps)
+        //     );
+        //     casadi::MX e_progress = s_dot_k - v_ref_k;
 
         // Along-path progress rate: project the predicted world-frame translational velocity onto the segment direction.
         // For a unicycle: world velocity = [v*cos(theta), v*sin(theta)].
         casadi::MX s_dot_k = params_.direction(0) * U_k(0) * casadi::MX::cos(X_(2,i)) + params_.direction(1) * U_k(0) * casadi::MX::sin(X_(2,i));
 
         // Progress-speed tracking: encourage the actual along-path velocity to match the desired speed.
-        casadi::MX e_progress = s_dot_k - v_ref_k;
+        casadi::MX e_progress = s_dot_k - params_.vref(i);
         J_ += config_.q_progress * e_progress * e_progress;
 
-        // Backward-motion penalty: approximately zero for forward velocity and increases quadratically for reverse velocity.
-        // The epsilon provides a smooth approximation of the absolute-value function near v = 0.
-        casadi::MX v = U_k(0);
-        casadi::MX backward_penalty = casadi::MX::pow(v - casadi::MX::sqrt(v*v + 1e-6), 2);
-        J_ += config_.w_backward * backward_penalty;
+        // Speed tracking: keeps control of v when the heading is far from the segment direction.
+        casadi::MX e_speed = U_k(0) - params_.vref(i);
+        J_ += config_.q_speed * e_speed * e_speed;
+
+        // Control smoothing: penalize the change in [v,w] between consecutive stages.
+        if (i > 0) {
+            casadi::MX delta_u = U_k - U_(casadi::Slice(), i-1);
+            J_ += config_.r_du * casadi::MX::dot(delta_u, delta_u);
+        }
+
+        // OLD (replaced): a soft penalty still allows some reverse, and it adds another sqrt to the cost.
+        //     The hard limit v >= 0 in buildConstraints() is simpler and cannot be traded off.
+        //
+        //     casadi::MX v = U_k(0);
+        //     casadi::MX backward_penalty = casadi::MX::pow(v - casadi::MX::sqrt(v*v + 1e-6), 2);
+        //     J_ += config_.w_backward * backward_penalty;
     }
+
+    // OLD (wrong): same problems as the stage heading cost above, a fixed target and an atan2 error.
+    //
+    //     casadi::MX angle_error = X_(2,config_.N) - theta_ref;
+    //     casadi::MX error_heading = casadi::MX::atan2(casadi::MX::sin(angle_error), casadi::MX::cos(angle_error));
+    //     J_ += config_.q_ct * error_ct * error_ct + config_.q_heading * error_heading * error_heading;
 
     // Terminal cost: penalize cross-track and heading errors at the final predicted state.
     casadi::MX error_ct = X_(0,config_.N) * normal_x + X_(1,config_.N) * normal_y - c;
-    casadi::MX angle_error = X_(2,config_.N) - theta_ref;
-    casadi::MX error_heading = casadi::MX::atan2(casadi::MX::sin(angle_error), casadi::MX::cos(angle_error));
 
-    J_ += config_.q_ct * error_ct * error_ct + config_.q_heading * error_heading * error_heading;
+    J_ += config_.q_ct * error_ct * error_ct
+        + config_.q_heading * 2.0 * (1.0 - casadi::MX::cos(X_(2,config_.N) - params_.theta_ref(config_.N)));
 
     // Register the complete objective function with the optimizer.
     opti_.minimize(J_);
@@ -1035,13 +1173,16 @@ void MPC::buildConstraints() {
 
         // Robot velocity limits
         opti_.subject_to(U_(0,i) <= config_.max_linear_speed);
-        opti_.subject_to(U_(0,i) >= -config_.max_linear_speed);
+        opti_.subject_to(U_(0,i) >= 0.0); // no reverse
         opti_.subject_to(U_(1,i) <= config_.max_angular_speed);
         opti_.subject_to(U_(1,i) >= -config_.max_angular_speed);
 
-        // Reference segment speed limit
-        opti_.subject_to(U_(0,i) <= params_.vmax);
-        opti_.subject_to(U_(0,i) >= -params_.vmax);
+        // OLD (replaced): reverse was allowed here and only discouraged by the backward penalty,
+        //     and the segment speed limit was a constraint. It now reaches the solver through vref.
+        //
+        //     opti_.subject_to(U_(0,i) >= -config_.max_linear_speed);
+        //     opti_.subject_to(U_(0,i) <= params_.vmax);
+        //     opti_.subject_to(U_(0,i) >= -params_.vmax);
     }
 
     // Terminal state bounds
@@ -1054,7 +1195,7 @@ void MPC::buildConstraints() {
     opti_.subject_to(X_(casadi::Slice(), 0) == params_.x0);
 
     // Equality constraints --> discrete-time dynamics
-    casadi::Function f = dynamics();
+    casadi::Function f = motionModel();
 
     for (int i = 0 ; i < config_.N ; i++) {
         casadi::MX X_k = X_(casadi::Slice(), i);
@@ -1073,14 +1214,21 @@ void MPC::buildConstraints() {
 // 3. Calculate the segment's:
 //    - Start position [x, y]
 //    - Normalized direction [dx, dy]
-//    - Length
-//    - Maximum allowed speed
 
-// 4. Update all CasADi parameters using opti_.set_value()
+// 4. Walk forward through the horizon to get the target speed and heading of every stage
+
+// 5. Update all CasADi parameters using opti_.set_value()
 void MPC::updateParameters(const RobotState& current_state, const ReferencePath2D& reference) {
     if (reference.segments_.empty())
         throw std::invalid_argument("Empty reference path");
 
+    const auto& pose = current_state.pose_;
+    if (!std::isfinite(pose.position_.x_) ||
+        !std::isfinite(pose.position_.y_) ||
+        !std::isfinite(pose.heading_))
+        throw std::invalid_argument("updateParameters : Invalid robot state");
+    if (current_state.header_.frame_id_ != reference.frame_id_)
+        throw std::runtime_error("updateParameters: Inconsistent frames");
     // Current robot state [x, y, theta]
     casadi::DM x0 = casadi::DM::zeros(3,1);
     x0(0) = current_state.pose_.position_.x_;
@@ -1118,17 +1266,103 @@ void MPC::updateParameters(const RobotState& current_state, const ReferencePath2
     dir_dm(1) = dir.y_;
     opti_.set_value(params_.direction, dir_dm);
 
-    // Segment length
-    casadi::DM len = casadi::DM::zeros(1,1);
-    len(0) = length;
-    opti_.set_value(params_.length, len);
+    // Target speed and heading of every stage, see the comment above buildObjective() for why.
+    casadi::DM vref = casadi::DM::zeros(1, config_.N);
+    casadi::DM theta_ref = casadi::DM::zeros(1, config_.N + 1);
 
-    // Maximum allowed speed
-    casadi::DM v = casadi::DM::zeros(1,1);
-    v(0) = active_seg_.max_speed_;
-    opti_.set_value(params_.vmax, v);
+    const double seg_heading = std::atan2(dir.y_, dir.x_);
+
+    // Start from the robot itself. The heading is never wrapped, so starting from it keeps theta_ref close to the robot's angle.
+    double s = std::max(0.0, dotProduct2D(pose.position_ - A, dir));
+    double heading = pose.heading_;
+
+    for (int k = 0 ; k <= config_.N ; k++) {
+        double target_speed = 0.0;
+        double heading_error = std::atan2(std::sin(seg_heading - heading), std::cos(seg_heading - heading));
+
+        if (std::abs(heading_error) > config_.heading_aligned_tolerance) {
+            // Rotate stage: stay in place and turn the target heading gradually toward the segment.
+            double step = std::min(std::abs(heading_error), config_.rotate_speed * config_.Ts);
+            heading += heading_error > 0.0 ? step : -step;
+        }
+        else {
+            // Drive stage: brake toward the endpoint, but keep creeping until the robot arrives.
+            heading += heading_error;
+            double remaining = std::max(0.0, length - s);
+            if (remaining > 1e-3) {
+                target_speed = std::min(
+                    active_seg_.max_speed_,
+                    std::max(config_.min_creep_speed, std::sqrt(2.0 * config_.a_brake * remaining))
+                );
+            }
+        }
+
+        theta_ref(k) = heading;
+        if (k < config_.N)
+            vref(k) = target_speed;
+
+        s += target_speed * config_.Ts;
+    }
+
+    opti_.set_value(params_.vref, vref);
+    opti_.set_value(params_.theta_ref, theta_ref);
 }
 
 ControlResult MPC::solve() {
+    ControlResult result;
 
+    result.command_.header_.frame_id_ = "base_link";
+    result.command_.header_.stamp_ = std::chrono::system_clock::now();
+
+    try {
+        // Apply warm-start guesses from the previous optimization cycle
+        opti_.set_initial(X_, X_guess_);
+        opti_.set_initial(U_, U_guess_);
+        // Solve optimization problem
+        casadi::OptiSol sol = opti_.solve();
+
+        casadi::DM U_opt = sol.value(U_);
+        casadi::DM u_apply = U_opt(casadi::Slice(), 0);
+
+        // First optimal control input [v, w]
+        result.command_.twist_.linear_x_ = static_cast<double>(u_apply(0));
+        result.command_.twist_.angular_z_ = static_cast<double>(u_apply(1));
+        result.status_ = ControlStatus::SUCCESS;
+
+
+        // Shift optimal controls by one timestep for the next optimization cycle
+        for (int i = 0 ; i < config_.N-1 ; i++) {
+            U_guess_(0,i) = U_opt(0,i+1);
+            U_guess_(1,i) = U_opt(1,i+1);
+        }
+        U_guess_(0, config_.N-1) = 0;
+        U_guess_(1, config_.N-1) = 0;
+
+        // Shift optimal states by one timestep
+        casadi::DM X_opt = sol.value(X_);
+        for (int i = 0; i < config_.N; i++) {
+            X_guess_(casadi::Slice(), i) = X_opt(casadi::Slice(), i+1);
+        }
+        // Repeat the terminal state
+        X_guess_(casadi::Slice(), config_.N) = X_opt(casadi::Slice(), config_.N);
+    }
+    catch (const std::exception& e) {
+        std::cerr << "MPC solver failed: " << e.what() << '\n';
+        // Solver failure: return zero velocity
+        result.command_.twist_.linear_x_ = 0.0;
+        result.command_.twist_.angular_z_ = 0.0;
+        result.status_ = ControlStatus::FAILURE;
+    }
+
+    return result;
+}
+
+void MPC::reset() {
+    warm_start_valid_ = false;
+
+    X_guess_ = casadi::DM::zeros(3, config_.N+1);
+    opti_.set_initial(X_, X_guess_);
+
+    U_guess_ = casadi::DM::zeros(2, config_.N);
+    opti_.set_initial(U_, U_guess_);
 }

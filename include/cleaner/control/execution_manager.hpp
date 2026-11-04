@@ -25,8 +25,10 @@ class ExecutionManager {
     private:
         PathTrackingController& control_;
         ReferencePath2D ref_path_;
-        int current_segment_index_;
-        ExecutionStatus status_;
-        double lookahead_distance_;
+
+
+        std::size_t current_segment_index_ = 0;
+        ExecutionStatus status_ = ExecutionStatus::IDLE;
+        double position_tolerance_ = 0.03; // metres
 
 };

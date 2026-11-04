@@ -8,26 +8,30 @@
 #include <casadi/core/optistack.hpp>
 #include <opencv2/opencv.hpp>
 #include <vector>
-
+#include <exception>
 
 struct MPCConfig {
     // Prediction
-    int N = 20;
+    int N = 40;
     double Ts = 0.05;
 
     // Cost weights
     double q_ct = 100.0;
-    double q_heading = 10.0;
-    double q_progress = 100.0;
-    double r_v = 1.0;
-    double r_w = 0.5;
-    double w_backward = 50.0;
+    double q_heading = 30.0;   // Previously 10
+    double q_progress = 30.0;  // Previously 100
+    double q_speed = 30.0; // for direct speed tracking
+    double r_w = 0.15;         // Previously 0.5
+    double r_du = 2.0; // penalize changes in control between stages. It applies to both v and w
 
     // Motion limits
     double max_linear_speed = 0.6;
     double max_angular_speed = 0.7854;
-    double a_brake = 0.1;
+    double min_creep_speed = 0.03; //the speed that keeps the robot moving until it arrives.
+    double rotate_speed = 0.6; // how fast the target heading turns.
+    double heading_aligned_tolerance = 0.03; // how close counts as “facing the segment” (rad)
+    double a_brake = 0.3;
 };
+
 
 
 struct MPCParameters {
@@ -36,8 +40,8 @@ struct MPCParameters {
     // Reference segment
     casadi::MX start;
     casadi::MX direction;
-    casadi::MX length;
-    casadi::MX vmax;
+    casadi::MX vref;
+    casadi::MX theta_ref;
 };
 
 
@@ -45,6 +49,7 @@ struct MPCParameters {
 
 class MPC : public PathTrackingController {
     public:
+        MPC();
         ControlResult compute(const RobotState& current_state, const ReferencePath2D& local_reference_path) override;
         void reset() override;
 
@@ -57,7 +62,7 @@ class MPC : public PathTrackingController {
         void multipleShootingPathTracking();
 
         casadi::Function dynamics();
-        casadi::Function motion();
+        casadi::Function motionModel();
 
 
         void visualizeRobot( const casadi::DM& state, const Segment<double>& reference, const std::vector<cv::Point2d>& robot_path);
@@ -78,5 +83,6 @@ class MPC : public PathTrackingController {
 
         // warm-start guess
         casadi::DM X_guess_, U_guess_;
+        bool warm_start_valid_ = false;
 
 };

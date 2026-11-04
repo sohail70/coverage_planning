@@ -14,6 +14,7 @@
 #include "cleaner/control/reference_builder.hpp"
 #include "cleaner/control/mpc.hpp"
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 
 int main(int argc , char* argv[]){
@@ -110,12 +111,53 @@ int main(int argc , char* argv[]){
     current_state.pose_.position_.x_ = first.start_.x_;
     current_state.pose_.position_.y_ = first.start_.y_;
     current_state.pose_.heading_ = theta;
+    current_state.header_.frame_id_ = reference.frame_id_;
 
 
 
     MPC mpc_;
     ExecutionManager em_(mpc_);
     em_.setReferencePath(reference);
+
+    ///////////////////////////// SIMULATION VISUALIZATION /////////////////////////////
+
+    // Convert world coordinates (metres) to image coordinates (pixels)
+    auto toPixel = [resolution, height](const Point<double>& p) {
+        return cv::Point{
+            cvRound(p.x_ / resolution),
+            cvRound(height - p.y_ / resolution)
+        };
+    };
+
+    // Prepare the original map
+    cv::Mat base_image;
+    cv::cvtColor(image_.getImage(), base_image, cv::COLOR_GRAY2BGR);
+
+    // Draw the final reference path
+    for (const auto& ref : reference.segments_) {
+
+        cv::Point A = toPixel(ref.segment_.start_);
+        cv::Point B = toPixel(ref.segment_.end_);
+
+        cv::Scalar color;
+
+        if (ref.type_ == ReferenceSegmentType::COVERAGE)
+            color = cv::Scalar(0, 200, 0); // Green
+        else
+            color = cv::Scalar(0, 255, 255); // Yellow
+
+        cv::line(base_image, A, B, color, 2, cv::LINE_AA);
+    }
+
+    // Store actual robot trajectory
+    std::vector<cv::Point> robot_path;
+
+    cv::namedWindow("Robot Simulation", cv::WINDOW_NORMAL);
+    cv::imshow("Robot Simulation", base_image);
+    cv::waitKey(1);
+    ///////////////////////////// SIMULATION VISUALIZATION END /////////////////////////////
+
+
 
 
     using Clock = std::chrono::steady_clock;
@@ -125,20 +167,89 @@ int main(int argc , char* argv[]){
 
     auto next = Clock::now();
 
-    for (int i = 0; i < 200; ++i) {
+    for (int i = 0; i < 2000; ++i) {
         next += period;
 
         ExecutionResult cmd = em_.update(current_state);
+        if(cmd.status_ == ExecutionStatus::FAILED) {
+            throw std::runtime_error("MAIN: Control Failed");
+        }
+        if(cmd.status_ == ExecutionStatus::COMPLETED) {
+            std::cout << "MAIN: Path completed\n";
+            break;
+        }
 
         // Simple unicycle simulation
         double v = cmd.command_.twist_.linear_x_;
         double w = cmd.command_.twist_.angular_z_;
+        std::cout << "Execution status: " << static_cast<int>(cmd.status_) << '\n';
 
+        std::cout << "v: " << cmd.command_.twist_.linear_x_ << ", w: " << cmd.command_.twist_.angular_z_ << '\n';
         double theta = current_state.pose_.heading_;
 
         current_state.pose_.position_.x_ += v * std::cos(theta) * dt;
         current_state.pose_.position_.y_ += v * std::sin(theta) * dt;
         current_state.pose_.heading_ += w * dt;
+
+
+        ///////////////////////////// ROBOT VISUALIZATION /////////////////////////////
+
+        // Current robot position
+        Point<double> robot_position = current_state.pose_.position_;
+        double heading = current_state.pose_.heading_;
+
+        cv::Point robot_pixel = toPixel(robot_position);
+
+        // Store actual robot trajectory
+        robot_path.push_back(robot_pixel);
+
+        // Start from the reference map
+        cv::Mat display = base_image.clone();
+
+        // Draw actual robot trajectory
+        for (std::size_t j = 1; j < robot_path.size(); j++) {
+            cv::line(
+                display,
+                robot_path[j-1],
+                robot_path[j],
+                cv::Scalar(255, 0, 0), // Blue
+                2,
+                cv::LINE_AA
+            );
+        }
+
+        // Draw robot as a circle
+        cv::circle(
+            display,
+            robot_pixel,
+            7,
+            cv::Scalar(0, 0, 255), // Red
+            -1,
+            cv::LINE_AA
+        );
+
+        // Calculate heading endpoint (0.5 metres ahead)
+        Point<double> heading_end{
+            robot_position.x_ + 0.5 * std::cos(heading),
+            robot_position.y_ + 0.5 * std::sin(heading)
+        };
+
+        // Draw heading line
+        cv::line(
+            display,
+            robot_pixel,
+            toPixel(heading_end),
+            cv::Scalar(0, 0, 255),
+            2,
+            cv::LINE_AA
+        );
+
+        // Update visualization
+        cv::imshow("Robot Simulation", display);
+        cv::waitKey(1);
+        ///////////////////////////// ROBOT VISUALIZATION END /////////////////////////////
+
+
 
         if (Clock::now() > next) {
             std::cerr << "Control deadline missed!\n";
